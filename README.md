@@ -199,12 +199,11 @@ However, all VMs belonging to individual projects (VMnPJxx) are completely isola
 - Some routers limit the number of port-forwarding entries. For example, Buffalo routers allow a maximum of 32. Therefore, when deciding value 5, you should also consider your router’s maximum port-forwarding capacity.
 - Also, if you are using IPoE with ND Proxy / MAP-E / DS-Lite, there are restrictions on available ports, so you must check in advance.
 
-### 2.3. Installation (Proxmox VE 9.0)
+### 2.3. Installation (Proxmox VE 9.0 or later)
 
 ``` bash
 apt update -y
 apt install -y ipcalc jq zip
-apt install -y python3-pyinstaller
 # Place the place zip file on the proxmox server using scp or similar.
 
 # In Corporate edition,
@@ -255,7 +254,6 @@ cd msl-setup
 #
 # **PRO CORPORATE EDITION ONLY**: This feature is included in the Pro Corporate edition.
 # For Community Edition users, this phase is optional and requires manual user/pool setup.
-```
 
 # (Optional) Uninstall MSL setup completely
 ./99_uninstall.sh en   # Language: en|jp (default en)
