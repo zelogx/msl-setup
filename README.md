@@ -24,7 +24,7 @@ On a single Proxmox VE node:
 - No VLAN-capable switches required.
 - **Corporate Edition only** Self-service VM management within your project network: project members can independently create, delete, start, stop VMs, and manage snapshots and backups without administrator intervention.
 
-For those who just want to build it now --- jump to [Quickstart](#2-3-installation).
+For those who just want to build it now --- jump to [Quickstart](#2-3-installation-proxmox-ve-9-0-or-later).
 
 ### 1.2. What You Get (Manager's Perspective)
 
