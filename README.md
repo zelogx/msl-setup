@@ -24,7 +24,7 @@ On a single Proxmox VE node:
 - No VLAN-capable switches required.
 - **Corporate Edition only** Self-service VM management within your project network: project members can independently create, delete, start, stop VMs, and manage snapshots and backups without administrator intervention.
 
-For those who just want to build it now --- jump to [Quickstart](#2-3-installation-proxmox-ve-9-0-or-later).
+For those who just want to build it now --- jump to [Quickstart](#2-3).
 
 ### 1.2. What You Get (Manager's Perspective)
 
@@ -199,6 +199,7 @@ However, all VMs belonging to individual projects (VMnPJxx) are completely isola
 - Some routers limit the number of port-forwarding entries. For example, Buffalo routers allow a maximum of 32. Therefore, when deciding value 5, you should also consider your router’s maximum port-forwarding capacity.
 - Also, if you are using IPoE with ND Proxy / MAP-E / DS-Lite, there are restrictions on available ports, so you must check in advance.
 
+<a id="2-3"></a>
 ### 2.3. Installation (Proxmox VE 9.0 or later)
 
 ``` bash
