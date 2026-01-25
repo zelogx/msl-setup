@@ -3,7 +3,7 @@
 Hola! Enjoying your self-hosted stack?
 Why not offer a secure slice of it to your team?
 Refer to REAMME_en.md for English documents.
-> [English version is here (README.md)](./README.md)
+> [English version is here (README.md)](./README.md) <BR>
 > Official Web Site is [here](https://www.zelogx.com)
 
 # パブリッククラウド開発環境からの脱却

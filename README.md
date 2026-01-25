@@ -4,7 +4,7 @@ Zelogx™ Multi-Project Secure Lab Setup is an open-source provisioning toolkit 
 
 © 2025 Zelogx. Zelogx™ and the Zelogx logo are trademarks of the Zelogx Project. All other marks are property of their respective owners.
 
-> [日本語版はこちら (README_jp.md)](./README_jp.md)
+> [日本語版はこちら (README_jp.md)](./README_jp.md) <BR>
 > Official Web Site is [here](https://www.zelogx.com)
 
 ## 1. Overview
