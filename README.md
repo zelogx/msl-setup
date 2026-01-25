@@ -269,7 +269,7 @@ cd msl-setup
 Argument Policy (v2.0):
 - Scripts accept only: language code (en|jp) and optional --restore/--destroy (where supported)
 - Unknown arguments cause an error and English usage output
-- Usage messages are English-only by design (spec requirement)
+- Usage messages are English-only by design
 - Library files (env_generator.sh, svg_generator.sh) are not directly executable; they print usage and exit if run directly
 
 ## 3. Known Issues

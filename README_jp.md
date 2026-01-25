@@ -324,7 +324,7 @@ cd msl-setup
 引数ポリシー:
 - スクリプトが受け付けるのは言語コード(en|jp)と --restore/--destroy のみ (対応スクリプトのみ)
 - 不正な引数は英語usageを表示しエラー終了
-- usageメッセージは英語のみ (仕様要求)
+- usageメッセージは英語のみ
 - ライブラリ (env_generator.sh, svg_generator.sh) は直接実行不可。直接叩くとusageを表示し終了
 
 
