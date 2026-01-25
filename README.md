@@ -5,6 +5,7 @@ Zelogx™ Multi-Project Secure Lab Setup is an open-source provisioning toolkit 
 © 2025 Zelogx. Zelogx™ and the Zelogx logo are trademarks of the Zelogx Project. All other marks are property of their respective owners.
 
 > [日本語版はこちら (README_jp.md)](./README_jp.md)
+> Official Web Site is [here](https://www.zelogx.com)
 
 ## 1. Overview
 
@@ -140,6 +141,7 @@ All open-source components --- reproducible setup from scratch.
 -   Optional: Cloudflare tunnel for GUI access
 
 **Required packages** (auto-installed by setup scripts):
+-   `git` - Retrieve the MSL Setup repository (Personal Edition)
 -   `ipcalc` - Network address calculation utility
 -   `jq` - JSON processing tool
 -   `zip` - Archive extraction utility
@@ -207,9 +209,9 @@ apt install -y python3-pyinstaller
 # In Corporate edition,
 unzip msl-setup-pro-1.x.x_corporate.zip    # change x to correct version number
 cd proxmox-msl-setup-1.x.x_corporate
-# In Personal edition,
-unzip msl-setup-pro-1.x.x.zip    # change x to correct version number
-cd proxmox-msl-setup-1.x.x
+# In MSL Setup (Personal Edition),
+git clone https://github.com/zelogx/msl-setup.git
+cd msl-setup
 
 # Phase 1: Network Setup (check config + SDN setup)
 ./01_networkSetup.sh en   # Language: en|jp (default en)

@@ -4,6 +4,7 @@ Hola! Enjoying your self-hosted stack?
 Why not offer a secure slice of it to your team?
 Refer to REAMME_en.md for English documents.
 > [English version is here (README.md)](./README.md)
+> Official Web Site is [here](https://www.zelogx.com)
 
 # パブリッククラウド開発環境からの脱却
 
@@ -181,6 +182,7 @@ CPU性能として約3.3〜3.4倍の差が見られる。
 - Pritunl
 
 **必要なパッケージ** (セットアップスクリプトで自動インストール):
+- `git` - MSL Setupリポジトリ取得用
 - `ipcalc` - ネットワークアドレス計算ユーティリティ
 - `jq` - JSON処理ツール
 - `zip` - アーカイブ解凍ユーティリティ
@@ -251,16 +253,15 @@ rootでPVEへSSHログイン。
 
 ```bash
 apt update -y
-apt install -y ipcalc jq zip
-apt install -y python3-pyinstaller
+apt install -y git ipcalc jq zip
 # Downloadしたzipファイルをscpなどで置いてください。
 
 # Corporate editionの場合
 unzip msl-setup-pro-1.x.x_corporate.zip    # change x to correct version number
 cd proxmox-msl-setup-1.x.x_corporate
 # Personal editionの場合
-unzip msl-setup-pro-1.x.x.zip    # change x to correct version number
-cd proxmox-msl-setup-1.x.x
+git clone https://github.com/zelogx/msl-setup.git
+cd msl-setup
 
 # Phase 1: ネットワークセットアップ (設定確認 + SDN構築)
 ./01_networkSetup.sh jp   # 言語: en|jp (省略時 en)
