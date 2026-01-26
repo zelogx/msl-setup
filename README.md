@@ -4,7 +4,6 @@ Zelogx™ Multiverse Secure Lab Setup (MSL Setup) is a source-available automati
 This repository provides the Personal / Community Edition.
 
 © 2025 Zelogx. Zelogx™ and the Zelogx logo are trademarks of the Zelogx Project. All other marks are property of their respective owners.
-
 > [日本語版はこちら (README_jp.md)](./README_jp.md) <BR>
 > Official Web Site is [here](https://www.zelogx.com)
 
@@ -12,6 +11,9 @@ This repository provides the Personal / Community Edition.
 
 This project builds **completely isolated development environments per project** by Layer 2 level, accessible securely via VPN.\
 It's a blueprint for **low-cost distributed development**, offshore projects, or private team labs.
+
+See below for architecture diagram.
+![Zelogx MSL Setup Network Overview](docs/assets/zelogx-MSL-Setup.svg)
 
 ### 1.1. What You Get (Engineer's Perspective)
 
