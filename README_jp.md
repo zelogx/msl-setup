@@ -15,6 +15,10 @@ Refer to REAMME_en.md for English documents.
 
 プロジェクトごとに完全に分離された L2 レベルの開発環境を構築し、VPN 経由で安全にアクセスできるようにします。
 低コストの分散開発、オフショア案件、またはチーム向けプライベートラボのためのプラットフォームです。
+
+以下はアーキテクチャ図。
+![Zelogx MSL Setup Network Overview](docs/assets/zelogx-MSL-Setup.svg)
+
 ## 1. 今回作ったものの超概要
 
 開発環境をプロジェクトごとに完全隔離。VPN経由でチームに公開。
