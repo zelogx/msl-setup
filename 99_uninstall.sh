@@ -114,6 +114,7 @@ echo "$MSG_UNINSTALL_WARNING"
 echo "$MSG_UNINSTALL_ITEM1"
 echo "$MSG_UNINSTALL_ITEM2"
 echo "$MSG_UNINSTALL_ITEM3"
+echo "$MSG_UNINSTALL_ITEM4"
 echo ""
 
 # Confirmation prompt
@@ -136,12 +137,33 @@ echo "$MSG_UNINSTALL_STARTING"
 echo ""
 
 # ============================================================================
-# Step 1: Destroy Pritunl VM
+# Step 1: Delete RBAC Configurations (if applicable)
 # ============================================================================
 
 echo "$MSG_UNINSTALL_STEP1"
-log_info "Step 1: Destroying Pritunl VM..."
+log_info "Step 1: Deleting RBAC Configurations (if applicable)..."
 
+if [ ! -f "0203_setupSelfCarePortal.sh" ]; then
+    log_warn "0203_setupSelfCarePortal.sh not found"
+    echo "$MSG_ASSUMING_NO_RBAC_OR_NO_CORPORATE_EDITION"
+    log_info "Skipping RBAC deletion step"
+fi
+
+if ! bash 0203_setupSelfCarePortal.sh "$MSL_LANG" --restore; then
+    log_error "Failed to delete RBAC configurations"
+    echo "$MSG_UNINSTALL_FAILED"
+    die "RBAC deletion failed. Check logs for details."
+fi
+
+log_info "RBAC deletion completed"
+echo ""
+
+# ============================================================================
+# Step 2: Destroy Pritunl VM
+# ============================================================================
+
+echo "$MSG_UNINSTALL_STEP2"
+log_info "Step 2: Destroying Pritunl VM..."
 if [ ! -f "0201_createPritunlVM.sh" ]; then
     log_error "0201_createPritunlVM.sh not found"
     echo "$MSG_UNINSTALL_FAILED"
@@ -158,11 +180,11 @@ log_info "Pritunl VM destruction completed"
 echo ""
 
 # ============================================================================
-# Step 2: Restore Network Configuration
+# Step 3: Restore Network Configuration
 # ============================================================================
 
-echo "$MSG_UNINSTALL_STEP2"
-log_info "Step 2: Restoring network configuration..."
+echo "$MSG_UNINSTALL_STEP3"
+log_info "Step 3: Restoring network configuration..."
 
 if [ ! -f "0102_setupNetwork.sh" ]; then
     log_error "0102_setupNetwork.sh not found"
