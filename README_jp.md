@@ -1,6 +1,6 @@
 # Multiverse Secure Lab(MSL) Setup for Proxmox by Zelogx™
 
-Zelogx™ Multiverse Secure Lab Setup（MSL Setup）は、Proxmox 上に「L2 レベルで分離されたセキュアな開発ラボ」を構築するための、ソース公開型オートメーションフレームワークです。
+Zelogx™ Multiverse Secure Lab Setup（MSL Setup）は、Proxmox 上に「マルチテナントでセキュアな開発環境」を構築するための、ソース公開型オートメーションフレームワークです。
 Proxmox SDN、ファイアウォール（セキュリティグループ）、Pritunl VPN を組み合わせて、プロジェクトごとに分離された環境を自動構築します。
 
 このリポジトリは、その Personal / Community Edition を提供します。
