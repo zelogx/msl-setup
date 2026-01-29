@@ -269,6 +269,7 @@ apt install -y git ipcalc jq zip
 unzip msl-setup-pro-1.x.x_corporate.zip    # change x to correct version number
 cd proxmox-msl-setup-1.x.x_corporate
 # Personal editionの場合
+apt install -y git
 git clone https://github.com/zelogx/msl-setup.git
 cd msl-setup
 
