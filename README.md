@@ -1,11 +1,14 @@
 # Multiverse Secure Lab(MSL) Setup for Proxmox by Zelogx™
 
-Zelogx™ Multiverse Secure Lab Setup (MSL Setup) is a source-available automation framework for building secure, multitenant development labs on Proxmox, utilizing Proxmox SDN, firewall security groups, and Pritunl VPN.  
-This repository provides the Personal / Community Edition.
+Zelogx™ MSL Setup (Multiverse Secure Lab Setup) is a multi-tenant setup tool that virtually partitions a single Proxmox server into isolated environments for each project or team.  
 
-© 2025 Zelogx. Zelogx™ and the Zelogx logo are trademarks of the Zelogx Project. All other marks are property of their respective owners.
+By automatically attaching a dedicated VPN to each tenant, it lets authorized users securely reach the right project zone from anywhere.  
+Concretely, it configures Proxmox SDN (Simple Zones + VNets) and firewall rules for you, transforming a plain hypervisor into a collection of multi-tenant–ready virtual spaces. With GUI-based VPN management (Pritunl) and MFA, it minimizes operational overhead while keeping robustness enforced by mechanisms rather than manual discipline.
+
 > [日本語版はこちら (README_jp.md)](./README_jp.md) <BR>
 > Official Web Site is [here](https://www.zelogx.com)
+
+© 2025 Zelogx. Zelogx™ and the Zelogx logo are trademarks of the Zelogx Project. All other marks are property of their respective owners.
 
 ## 1. Overview
 

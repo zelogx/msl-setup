@@ -66,40 +66,32 @@ collect_existing_vmids() {
 # Sets global: IMAGE_STORAGE
 ################################################################################
 select_image_storage() {
-    # Require pvesm
-    if ! command -v pvesm >/dev/null 2>&1; then
-        log_error "pvesm command not found; cannot detect image storage. Aborting."
-        die "pvesm not found on this host"
+    # Use pvesh JSON output to avoid stray stderr lines from pvesm
+    if ! command -v pvesh >/dev/null 2>&1; then
+        log_error "pvesh command not found; cannot detect image storage. Aborting."
+        die "pvesh not found on this host"
     fi
 
-    # Capture pvesm output once and reuse
-    IMAGE_STORAGE_LIST=$(pvesm status --content=images --enabled=1 2>&1 || true)
-    log_info "Available image storages (raw):"
-    log_info "$IMAGE_STORAGE_LIST"
-    echo "Available image storages:"
-    echo "$IMAGE_STORAGE_LIST"
-
-    # Count lines (header + entries)
-    local lines
-    lines=$(echo "$IMAGE_STORAGE_LIST" | wc -l)
-
-    # If no entries (less than 2 lines including header) -> fatal
-    if [ "$lines" -lt 2 ]; then
-        log_error "No image storage detected by pvesm. Cannot continue."
-        die "No image storage available (pvesm returned no enabled storages with images)"
+    log_info "Querying storage list via pvesh..."
+    local storage_json
+    storage_json=$(pvesh get /storage --output-format json 2>/dev/null) || true
+    if [ -z "$storage_json" ]; then
+        log_error "pvesh returned empty storage list"
+        die "No storage available (pvesh returned empty)"
     fi
 
-    # If only header + 1 entry (2 lines) -> pick that storage automatically
-    if [ "$lines" -eq 2 ]; then
-        IMAGE_STORAGE=$(echo "$IMAGE_STORAGE_LIST" | sed '1d' | awk '{print $1;}' | head -n1)
+    # Extract storages that are enabled and support 'images' content
+    mapfile -t choices < <(echo "$storage_json" | jq -r '.[] | select((.enabled==1) or (.enabled? == null)) | select(.content | test("(^|,)images(,|$)")) | .storage' 2>/dev/null || true)
+
+    if [ ${#choices[@]} -eq 0 ]; then
+        log_error "No enabled storage with 'images' content found"
+        die "No image storage available (no enabled storages with images)"
+    elif [ ${#choices[@]} -eq 1 ]; then
+        IMAGE_STORAGE="${choices[0]}"
         log_info "Auto-selected image storage: $IMAGE_STORAGE"
         return 0
-    fi
-
-    # If more than 2 lines, prompt the user to select
-    if [ "$lines" -ge 3 ]; then
+    else
         echo "$MSG_VM_IMAGE_STORAGE_MULTIPLE"
-        mapfile -t choices < <(echo "$IMAGE_STORAGE_LIST" | sed '1d' | awk '{print $1}')
         local i=1
         for c in "${choices[@]}"; do
             echo "  $i) $c"
