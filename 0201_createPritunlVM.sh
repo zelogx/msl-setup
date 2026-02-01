@@ -6,7 +6,7 @@
 # of the Zelogx Project. All other marks are property of their respective owners.
 #
 # Filename: 02_deploy_pritunl.sh
-# Purpose: Deploy Pritunl VM with Ubuntu 24.04 LTS using cloud-init
+# Purpose: Deploy Pritunl VM with AlmaLinux 9.7 using cloud-init
 #
 # Main functions/commands used:
 #   - qm: Proxmox VM management
@@ -29,7 +29,7 @@
 #   - Automatically allocates VMID starting from 100
 #   - Creates new VM (never modifies existing VMs)
 #   - Auto-generates SSH key if none exists
-#   - Downloads and caches Ubuntu 24.04 cloud-init image
+#   - Downloads and caches AlmaLinux 9.7 cloud-init image
 #   - Validates VM network configuration remotely
 ################################################################################
 
@@ -108,10 +108,10 @@ source lib/vm_utils.sh
 # Configuration
 # ============================================================================
 
-# Ubuntu 24.04 LTS Cloud-Init Image
-readonly IMAGE_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
-readonly CHECKSUM_URL="https://cloud-images.ubuntu.com/noble/current/SHA256SUMS"
-readonly IMAGE_CACHE_PATH="/var/lib/vz/template/iso/ubuntu-24.04-server-cloudimg-amd64.img"
+# AlmaLinux 9.7 Cloud-Init Image
+readonly IMAGE_URL="https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"
+readonly CHECKSUM_URL="https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/CHECKSUM"
+readonly IMAGE_CACHE_PATH="/var/lib/vz/template/iso/almalinux-9-genericcloud-latest.x86_64.qcow2"
 
 # VM Configuration
 readonly VM_NAME="pritunl-msl"

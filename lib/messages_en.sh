@@ -321,7 +321,7 @@ MSG_VM_SSH_KEY_GENERATE="No SSH keys found. Generating new key..."
 MSG_VM_SSH_KEY_GENERATED="Generated new SSH key: %s"
 
 # Cloud-Init Image
-MSG_VM_IMAGE_DOWNLOAD="Downloading Ubuntu 24.04 cloud-init image..."
+MSG_VM_IMAGE_DOWNLOAD="Downloading AlmaLinux 9.7 cloud-init image..."
 MSG_VM_IMAGE_CACHED="Using cached cloud-init image."
 MSG_VM_IMAGE_VERIFY="Verifying image hash..."
 MSG_VM_IMAGE_HASH_OK="Image hash verified successfully."

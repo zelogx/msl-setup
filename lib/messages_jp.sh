@@ -315,7 +315,7 @@ MSG_VM_SSH_KEY_GENERATE="SSHキーが見つかりません。新しいキーを�
 MSG_VM_SSH_KEY_GENERATED="新しいSSHキーを生成しました: %s"
 
 # Cloud-Initイメージ
-MSG_VM_IMAGE_DOWNLOAD="Ubuntu 24.04 cloud-initイメージをダウンロード中..."
+MSG_VM_IMAGE_DOWNLOAD="AlmaLinux 9.7 cloud-initイメージをダウンロード中..."
 MSG_VM_IMAGE_CACHED="キャッシュされたcloud-initイメージを使用します。"
 MSG_VM_IMAGE_VERIFY="イメージハッシュを検証中..."
 MSG_VM_IMAGE_HASH_OK="イメージハッシュ検証成功。"

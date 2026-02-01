@@ -10,7 +10,7 @@
 #
 # Main functions/commands used:
 #   - ssh: Remote command execution
-#   - apt: Package installation
+#   - dnf: Package installation
 #   - systemctl: Service management
 #   - pritunl: CLI configuration
 #
@@ -56,45 +56,38 @@ install_pritunl_packages() {
         die "Disk space check failed: only ${avail_space} available, need at least 2GB"
     fi
     
-    # Add MongoDB 8.0 repository
-    log_info "Adding MongoDB 8.0 repository..."
-    if ! ssh "root@${vm_ip}" bash <<'EOF'
-curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | \
-  gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor --yes
-
-echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] \
-  https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" | \
-  tee /etc/apt/sources.list.d/mongodb-org.list
+        # Add MongoDB 8.0 repository
+        log_info "Adding MongoDB 8.0 repository..."
+        if ! ssh "root@${vm_ip}" bash <<'EOF'
+cat > /etc/yum.repos.d/mongodb-org.repo <<'REPO'
+[mongodb-org-8.0]
+name=MongoDB Repository
+baseurl=https://repo.mongodb.org/yum/redhat/9/mongodb-org/8.0/x86_64/
+gpgcheck=1
+enabled=1
+gpgkey=https://pgp.mongodb.com/server-8.0.asc
+REPO
 EOF
     then
         log_error "Failed to add MongoDB repository"
         die "MongoDB repository setup failed (exit code: $?)"
     fi
     
-    # Add OpenVPN repository
-    log_info "Adding OpenVPN repository..."
-    if ! ssh "root@${vm_ip}" bash <<'EOF'
-curl -fsSL https://swupdate.openvpn.net/repos/repo-public.gpg | \
-  gpg -o /usr/share/keyrings/openvpn-repo.gpg --dearmor --yes
+        # Use pritunl-openvpn provided by Pritunl RHEL repository
+        # (replaces EPEL openvpn as recommended by Pritunl)
 
-echo "deb [ signed-by=/usr/share/keyrings/openvpn-repo.gpg ] \
-  https://build.openvpn.net/debian/openvpn/stable noble main" | \
-  tee /etc/apt/sources.list.d/openvpn.list
-EOF
-    then
-        log_error "Failed to add OpenVPN repository"
-        die "OpenVPN repository setup failed (exit code: $?)"
-    fi
-    
-    # Add Pritunl repository
-    log_info "Adding Pritunl repository..."
-    if ! ssh "root@${vm_ip}" bash <<'EOF'
-curl -fsSL https://raw.githubusercontent.com/pritunl/pgp/master/pritunl_repo_pub.asc | \
-  gpg -o /usr/share/keyrings/pritunl.gpg --dearmor --yes
-
-echo "deb [ signed-by=/usr/share/keyrings/pritunl.gpg ] \
-  https://repo.pritunl.com/stable/apt noble main" | \
-  tee /etc/apt/sources.list.d/pritunl.list
+        # Add Pritunl repository (Oracle Linux 9 path per official guidance)
+        log_info "Adding Pritunl repository..."
+        if ! ssh "root@${vm_ip}" bash <<'EOF'
+cat > /etc/yum.repos.d/pritunl.repo <<'REPO'
+[pritunl]
+name=Pritunl Repository
+    baseurl=https://repo.pritunl.com/stable/yum/oraclelinux/9/
+gpgcheck=1
+enabled=1
+gpgkey=https://raw.githubusercontent.com/pritunl/pgp/master/pritunl_repo_pub.asc
+REPO
+sed -i 's/^\s\+//' /etc/yum.repos.d/pritunl.repo
 EOF
     then
         log_error "Failed to add Pritunl repository"
@@ -104,31 +97,49 @@ EOF
     # Install packages
     log_info "Installing packages (this may take a few minutes)..."
     if ! ssh "root@${vm_ip}" bash <<'EOF'
-export DEBIAN_FRONTEND=noninteractive
-apt update
-apt install -y pritunl mongodb-org openvpn wireguard wireguard-tools
+dnf -y update
+yum -y swap openvpn pritunl-openvpn || true
+yum -y --allowerasing install pritunl-openvpn
+dnf -y install pritunl pritunl-openvpn wireguard-tools mongodb-org
 EOF
     then
         local exit_code=$?
         log_error "Package installation failed with exit code: ${exit_code}"
         log_error "Checking disk space after failure:"
         ssh "root@${vm_ip}" "df -h /" | tee -a "${LOG_FILE}"
-        log_error "Checking dpkg status:"
-        ssh "root@${vm_ip}" "dpkg -l | grep -E 'pritunl|mongodb|openvpn|wireguard'" | tee -a "${LOG_FILE}"
+        log_error "Checking rpm status:"
+        ssh "root@${vm_ip}" "rpm -qa | grep -E 'pritunl|mongodb|openvpn|wireguard'" | tee -a "${LOG_FILE}"
         die "Failed to install Pritunl packages (exit code: ${exit_code}). Check disk space and logs above."
     fi
     
     log_info "Package installation completed"
-    
-    # DEBUG (via log_info): /etc/pritunl.conf immediately after installation
-    {
-        log_info "DEBUG: /etc/pritunl.conf after package installation (BEGIN)"
-        conf_after_install=$(ssh "root@${vm_ip}" "cat /etc/pritunl.conf" || true)
-        while IFS= read -r line; do
-            log_info "${line}"
-        done <<< "${conf_after_install}"
-        log_info "DEBUG: /etc/pritunl.conf after package installation (END)"
-    }
+
+    # Load Pritunl SELinux policies and relabel files
+    log_info "Loading Pritunl SELinux policies..."
+    if ! ssh "root@${vm_ip}" bash <<'EOF'
+if command -v semodule >/dev/null 2>&1; then
+    semodule_args=()
+    [ -f /usr/share/selinux/packages/pritunl.pp ] && semodule_args+=(/usr/share/selinux/packages/pritunl.pp)
+    [ -f /usr/share/selinux/packages/pritunl_web.pp ] && semodule_args+=(/usr/share/selinux/packages/pritunl_web.pp)
+    [ -f /usr/share/selinux/packages/pritunl_dns.pp ] && semodule_args+=(/usr/share/selinux/packages/pritunl_dns.pp)
+    if [ ${#semodule_args[@]} -gt 0 ]; then
+        semodule -i "${semodule_args[@]}"
+    fi
+
+    restore_targets=()
+    [ -f /etc/pritunl.conf ] && restore_targets+=(/etc/pritunl.conf)
+    [ -d /var/lib/pritunl ] && restore_targets+=(/var/lib/pritunl)
+    [ -d /var/log/pritunl ] && restore_targets+=(/var/log/pritunl)
+    [ -d /run/pritunl ] && restore_targets+=(/run/pritunl)
+    [ -d /var/run/pritunl ] && restore_targets+=(/var/run/pritunl)
+    if [ ${#restore_targets[@]} -gt 0 ]; then
+        restorecon -Rv "${restore_targets[@]}" || true
+    fi
+fi
+EOF
+    then
+        log_warn "Failed to load Pritunl SELinux policies (non-fatal, continuing...)"
+    fi
 }
 
 ################################################################################
@@ -227,7 +238,7 @@ EOF
 
 ################################################################################
 # Function: apply_security_hardening
-# Description: Apply security hardening (bind addresses, disable ufw)
+# Description: Apply security hardening (bind addresses, disable port 80)
 #
 # Parameters:
 #   $1 - Pritunl VM IP address
@@ -253,25 +264,9 @@ cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup
 sed -i '/^ListenAddress/d' /etc/ssh/sshd_config
 echo "ListenAddress ${PT_IG_IP}" >> /etc/ssh/sshd_config
 
-# Restart SSH (Ubuntu 24.04 uses 'ssh' not 'sshd')
-systemctl restart ssh
+# Restart SSH (AlmaLinux uses 'sshd')
+systemctl restart sshd
 EOF
-    
-    # Disable ufw (use PVE Firewall instead)
-    log_info "Disabling ufw..."
-    if ! ssh "root@${vm_ip}" bash <<'EOF'
-set -e
-if systemctl is-enabled --quiet ufw; then
-  ufw disable || { echo "ERROR: Failed to disable ufw"; exit 1; }
-  systemctl disable ufw || { echo "ERROR: Failed to systemctl disable ufw"; exit 1; }
-fi
-exit 0
-EOF
-    then
-        log_error "Failed to disable ufw firewall"
-        ssh "root@${vm_ip}" "systemctl status ufw --no-pager" | tee -a "${LOG_FILE}" || true
-        die "ufw disable sequence failed"
-    fi
     
     log_info "Security hardening completed"
 }
@@ -314,16 +309,6 @@ configure_global_pritunl_settings() {
     
     log_info "Configuring global Pritunl settings..."
     
-    # DEBUG (via log_info): Show current config before edit
-    {
-        log_info "DEBUG: /etc/pritunl.conf before edit (BEGIN)"
-        conf_before=$(ssh "root@${vm_ip}" "cat /etc/pritunl.conf" || true)
-        while IFS= read -r line; do
-            log_info "${line}"
-        done <<< "${conf_before}"
-        log_info "DEBUG: /etc/pritunl.conf before edit (END)"
-    }
-
     # Configure Pritunl before first start
     log_info "Configuring Pritunl settings before first start..."
     if ! PT_IG_IP="${PT_IG_IP}" ssh "root@${vm_ip}" bash <<'EOF'
@@ -388,16 +373,6 @@ EOF
         ssh "root@${vm_ip}" "cat /etc/pritunl.conf" | tee -a "${LOG_FILE}" || true
         die "Pritunl pre-start configuration failed"
     fi
-    
-    # DEBUG (via log_info): Show config after edit
-    {
-        log_info "DEBUG: /etc/pritunl.conf after edit (BEGIN)"
-        conf_after=$(ssh "root@${vm_ip}" "cat /etc/pritunl.conf" || true)
-        while IFS= read -r line; do
-            log_info "${line}"
-        done <<< "${conf_after}"
-        log_info "DEBUG: /etc/pritunl.conf after edit (END)"
-    }
     
     # Set DNS route via CLI after config file is ready
     log_info "Setting vpn.dns_route via CLI..."
@@ -495,13 +470,26 @@ create_pritunl_servers_mongodb() {
 
     log_info "Creating Pritunl VPN servers via MongoDB direct manipulation..."
 
-    # Call external helper binary
-    local bin_path="${PROJECT_ROOT}/lib/pritunl_build_helper"
-    
-    log_info "Running bundled binary: ${bin_path} mongodb --vm-ip ${vm_ip}"
-    if ! "${bin_path}" mongodb --vm-ip "${vm_ip}" --env "${PROJECT_ROOT}/.env"; then
-        die "External binary failed to create Pritunl servers"
+    # Copy compiled binary helper to VM
+    local binary_path="${PROJECT_ROOT}/lib/pritunl_build_helper"
+    log_info "Copying compiled helper binary to VM..."
+    if ! scp "${binary_path}" "root@${vm_ip}:/tmp/pritunl_build_helper"; then
+        die "Failed to copy helper binary to VM"
     fi
+
+    # Make binary executable
+    ssh "root@${vm_ip}" "chmod +x /tmp/pritunl_build_helper" || die "Failed to set executable permission"
+
+    # Run compiled binary (output to both console and log)
+    log_info "Running helper binary for MongoDB server creation..."
+    ssh "root@${vm_ip}" "/tmp/pritunl_build_helper mongodb --vm-ip ${vm_ip} --env /tmp/.env" 2>&1 | tee -a "${LOG_FILE}"
+    local ssh_status="${PIPESTATUS[0]}"
+    if [[ $ssh_status -ne 0 ]]; then
+        die "Helper binary failed to create Pritunl servers"
+    fi
+
+    # Clean up
+    ssh "root@${vm_ip}" "rm -f /tmp/pritunl_build_helper" || true
 }
 
 ################################################################################

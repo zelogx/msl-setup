@@ -64,6 +64,17 @@ source .env
 setup_logging "03_pritunl_setup"
 
 ################################################################################
+# Function: refresh_ssh_known_hosts
+# Description: Remove stale SSH host key entries for a target host
+################################################################################
+refresh_ssh_known_hosts() {
+    local host_ip="$1"
+    if [ -f "${HOME}/.ssh/known_hosts" ]; then
+        ssh-keygen -R "${host_ip}" >/dev/null 2>&1 || true
+    fi
+}
+
+################################################################################
 # Main execution
 ################################################################################
 
@@ -92,7 +103,8 @@ fi
 
 # Verify SSH connectivity (host key should already be in known_hosts from Phase 2)
 log_info "Verifying SSH connectivity to ${PT_IG_IP}..."
-if ! ssh -o ConnectTimeout=10 "root@${PT_IG_IP}" "echo 'SSH OK'" &>/dev/null; then
+refresh_ssh_known_hosts "${PT_IG_IP}"
+if ! ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "root@${PT_IG_IP}" "echo 'SSH OK'" &>/dev/null; then
     die "Cannot connect to Pritunl VM via SSH at ${PT_IG_IP}"
 fi
 log_info "SSH connectivity verified"
@@ -114,9 +126,10 @@ if [ -n "$latest_snap" ]; then
     
     # Re-verify SSH connectivity after restore
     log_info "Re-verifying SSH connectivity after snapshot rollback..." -c
+    refresh_ssh_known_hosts "${PT_IG_IP}"
     retry_count=0
     while [ $retry_count -lt 30 ]; do
-        if ssh -o ConnectTimeout=5 "root@${PT_IG_IP}" "echo 'SSH OK'" &>/dev/null; then
+        if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "root@${PT_IG_IP}" "echo 'SSH OK'" &>/dev/null; then
             log_info "SSH connectivity re-verified after rollback" -c
             break
         fi
@@ -159,6 +172,12 @@ configure_global_pritunl_settings "${PT_IG_IP}"
 
 # Apply security hardening (after Pritunl is already started)
 apply_security_hardening "${PT_IG_IP}"
+
+# Copy .env to VM for helper binary (required for mongodb command)
+log_info "Preparing environment configuration for helper binary..." -c
+if ! scp ".env" "root@${PT_IG_IP}:/tmp/.env"; then
+    die "Failed to copy .env configuration to VM"
+fi
 
 # Create VPN servers via MongoDB direct manipulation (Phase 3.9.2)
 create_pritunl_servers_mongodb "${PT_IG_IP}"

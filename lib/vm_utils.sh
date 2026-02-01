@@ -188,7 +188,7 @@ ensure_ssh_key() {
 
 ################################################################################
 # Function: download_cloud_image
-# Description: Download Ubuntu cloud-init image with hash verification
+# Description: Download cloud-init image with hash verification
 #
 # Main commands/functions used:
 #   - wget/curl: Download image and checksum file
@@ -213,13 +213,13 @@ download_cloud_image() {
     # Download image
     echo "$MSG_VM_IMAGE_DOWNLOAD"
     if command -v wget >/dev/null 2>&1; then
-        if ! wget -q --show-progress -O "$cache_path" "$image_url"; then
+        if ! wget -q -O "$cache_path" "$image_url"; then
             log_error "wget failed to download image"
             rm -f "$cache_path"
             die "Failed to download cloud-init image"
         fi
     elif command -v curl >/dev/null 2>&1; then
-        if ! curl -L -o "$cache_path" "$image_url"; then
+        if ! curl -s -L -o "$cache_path" "$image_url"; then
             log_error "curl failed to download image"
             rm -f "$cache_path"
             die "Failed to download cloud-init image"
@@ -391,6 +391,8 @@ ssh_pwauth: true
 
 packages:
   - qemu-guest-agent
+  - bind-utils
+  - nmap-ncat
 
 ssh_authorized_keys:
   - $ssh_pubkey
@@ -399,7 +401,7 @@ runcmd:
   - systemctl enable qemu-guest-agent
   - systemctl start qemu-guest-agent
   - growpart /dev/sda 1 || true
-  - resize2fs /dev/sda1 || true
+  - xfs_growfs / || true
   - rm -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf
   - rm -f /etc/ssh/sshd_config.d/50-cloud-init.conf
   - |
@@ -410,12 +412,14 @@ runcmd:
     ListenAddress $PT_IG_IP
     CFG
   - systemctl daemon-reload
-  - systemctl restart ssh.socket
+  - systemctl restart sshd
   - ip route add $PJALL_CIDR via $VPNDMZ_GW dev eth1
   - echo '#!/bin/sh' > /etc/rc.local
   - echo 'ip route add $PJALL_CIDR via $VPNDMZ_GW dev eth1 ' >> /etc/rc.local
   - chmod +x /etc/rc.local
   - echo 'root:Ze!0gx' | chpasswd
+  - mkdir -p /tmp/.meipass && chmod 1777 /tmp/.meipass
+  - mkdir -p /var/tmp/.meipass && chmod 1777 /var/tmp/.meipass
 EOF
     
     
@@ -507,9 +511,12 @@ EOF
 ################################################################################
 # Function: wait_for_cloudinit
 # Description: Wait for cloud-init to complete inside VM via guest agent
+#              AlmaLinux may not auto-create boot-finished, so poll for SSH and
+#              check if cloud-init processes have finished instead.
 #
 # Main commands/functions used:
-#   - qm guest exec: Execute command inside VM via guest agent
+#   - ssh: Verify SSH accessibility and cloud-init status
+#   - ps: Check cloud-init process completion (via guest exec or SSH)
 ################################################################################
 wait_for_cloudinit() {
     local vmid="$1"
@@ -518,14 +525,32 @@ wait_for_cloudinit() {
     local elapsed=0
     
     printf "$MSG_VM_CLOUDINIT_WAIT\\n" "$timeout"
-    log_info "Waiting for cloud-init to complete via guest agent (timeout: ${timeout}s)..."
-    log_info "Note: qemu-guest-agent will be installed during cloud-init, this may take ~60-120s"
+    log_info "Waiting for cloud-init to complete (timeout: ${timeout}s)..."
+    log_info "Polling for SSH connectivity and cloud-init process completion..."
     
+    # Poll for SSH connectivity (cloud-init restarts SSH as part of runcmd)
     while [ $elapsed -lt $timeout ]; do
-        if timeout 2 qm guest exec "$vmid" -- test -f /var/lib/cloud/instance/boot-finished >/dev/null 2>&1; then
-            echo "$MSG_VM_CLOUDINIT_DONE"
-            log_info "Cloud-init completed after ${elapsed}s (guest agent)"
-            return 0
+        # Try SSH to verify system is accessible
+        if timeout 3 ssh -o ConnectTimeout=2 \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR \
+            root@"$PT_IG_IP" "true" >/dev/null 2>&1; then
+            
+            log_info "SSH connectivity established at ${elapsed}s"
+            
+            # SSH works, now verify cloud-init has completed
+            # Check if cloud-init process is done (not running any main cloud-init processes)
+            if timeout 3 ssh -o ConnectTimeout=2 \
+                -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/dev/null \
+                -o LogLevel=ERROR \
+                root@"$PT_IG_IP" "[ -f /var/lib/cloud/instance/boot-finished ] || systemctl is-system-running --wait >/dev/null 2>&1" >/dev/null 2>&1; then
+                
+                echo "$MSG_VM_CLOUDINIT_DONE"
+                log_info "Cloud-init completion verified via SSH after ${elapsed}s"
+                return 0
+            fi
         fi
 
         sleep $interval
@@ -533,11 +558,29 @@ wait_for_cloudinit() {
         
         # Progress update every 30 seconds
         if [ $((elapsed % 30)) -eq 0 ]; then
-            log_info "Still waiting for cloud-init... (${elapsed}s elapsed)"
+            log_info "Still waiting for SSH and cloud-init... (${elapsed}s elapsed)"
         fi
     done
     
-    log_warn "Guest agent check timeout after ${timeout}s"
+    # Timeout occurred
+    log_warn "Timeout after ${timeout}s waiting for cloud-init completion"
+    log_warn "Attempting to verify system is at least accessible..."
+    
+    # Last attempt: just verify SSH works
+    if timeout 3 ssh -o ConnectTimeout=2 \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR \
+        root@"$PT_IG_IP" "true" >/dev/null 2>&1; then
+        
+        log_warn "System is SSH-accessible but cloud-init completion could not be verified"
+        log_info "Manual verification: ssh root@${PT_IG_IP} 'tail -20 /var/log/cloud-init-output.log'"
+        return 1
+    fi
+    
+    # Can't reach SSH at all
+    log_error "System is not SSH-accessible after ${timeout}s"
+    log_info "VM VMID $vmid is still running. Manual check: qm status $vmid"
     return 1
 }
 

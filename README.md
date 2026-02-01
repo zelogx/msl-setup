@@ -18,6 +18,135 @@ It's a blueprint for **low-cost distributed development**, offshore projects, or
 See below for architecture diagram.
 ![Zelogx MSL Setup Network Overview](docs/assets/zelogx-MSL-Setup.svg)
 
+### Motivation
+
+#### The Problem: The "Flat Network" Trap in Proxmox
+
+When I needed to share my Proxmox development environment with team members over VPN, I ran into a familiar set of problems:
+
+- **Visibility vs. Privacy**: A typical VPN setup tends to expose too much. I wanted each team member to see their own project VMs, but not my personal lab, other clients' environments, or the host infrastructure.
+- **Management Overhead**: Manually issuing, revoking, and organizing VPN profiles for multiple users across multiple projects does not scale. It’s tedious and error-prone.
+- **The Isolation Gap**: Proxmox is powerful, but achieving true L2 isolation between “tenants” while still keeping VPN access simple usually means hand-rolling SDN + firewall rules. Repeating that setup reliably is hard.
+
+#### The Solution: Building the "Multiverse"
+
+I went looking for a tool that could:
+
+- Spin up a secure, isolated "bubble" (a tenant) per project
+- Attach a dedicated VPN gateway to that bubble
+- Handle the boilerplate around VPN profile management
+
+I couldn’t find it.
+
+So I built **Zelogx MSL Setup**.
+
+Zelogx turns a single Proxmox VE host into a multi-tenant lab provider. It’s aimed at engineers who need to give secure, isolated access to specific resources without exposing the rest of their infrastructure.
+
+---
+
+### Architecture
+
+(Refer to the high-resolution network diagram in this repository for full details.)
+
+```plaintext
++----------------+       +------------------+
+|  VPN Client    | ----> |  Cloudflare /    |
+| (Team Member)  |       |  Internet        |
++----------------+       +------------------+
+        |                        |
+        | VPN Tunnel (UDP/TCP)   | Port Forwarding
+        v                        v
++=========================================================================+
+|  Proxmox VE Host (Physical Server)                                      |
+|                                                                         |
+|    +----------------------------------------+                           |
+|    | Pritunl VM (VPN Gateway)               |                           |
+|    |  [OpenVPN Servers]  [WireGuard Servers]|                           |
+|    |         |                  |           |                           |
+|    +---------+------------------+-----------+                           |
+|              | VPN Traffic (Decrypted)                                  |
+|              v                                                          |
+|    +----------------------------------------+                           |
+|    |  SDN Zone: vpndmz (192.168.80.0/24)    |                           |
+|    +----------------------------------------+                           |
+|              |                                                          |
+|              | (Routing & Firewalling)                                  |
+|    +=========v==============================+                           |
+|    | Nftables / Proxmox SDN Engine          |  <-- "Multiverse"         |
+|    | (L2/L3 Isolation Enforcement)          |      Enforcer             |
+|    +=========+====================+=========+                           |
+|              |                    |                                     |
+|    +---------v-------+    +-------v-------+         +-------v-------+   |
+|    | Zone: devpj01   |    | Zone: devpj02 |         | Zone: devpjNN |   |
+|    | [Isolated Lab]  |    | [Isolated Lab]|   ...   | [Isolated Lab]|   |
+|    | 172.16.16.0/24  |    | 172.16.17.0/24|         | 172.16.xx.0/24|   |
+|    +-----------------+    +---------------+         +---------------+   |
+|       | VM1 | VM2 |          | VM1 | VM2 |             | VMs... |       |
+|       +-----+-----+          +-----+-----+             +--------+       |
+|            (🔒)                   (🔒)                      (🔒)         |
++=========================================================================+
+LEGEND: ---> Traffic Flow, [🔒] Isolated Project Environment
+```
+
+---
+
+### Engineering Principles
+
+#### 1. Pre-configuration over Runtime Overhead
+
+Zelogx MSL Setup is designed as a **pre-configuration tool**.
+
+- **No long-running daemons**: All SDN objects, isolation rules, and VPN gateways are provisioned up front.
+- **Static security posture**: Once the setup is complete, the environment is “baked into” Proxmox. There is no separate “Zelogx service” that can crash, drift, or introduce its own attack surface at runtime.
+
+#### 2. 100% Native Proxmox Building Blocks
+
+We try to stick to the “power of boring technology”.
+
+- **Standard features only**: The tool uses native Proxmox VE components — `pvesh`, Proxmox SDN (Simple/VLAN zones), and the built-in nftables integration.
+- **Update-friendly**: There are no custom kernel modules or out-of-tree drivers. You keep getting regular Proxmox updates without carrying extra technical debt.
+
+#### 3. Pritunl Automation (VPN Provisioning)
+
+The VPN side is fully automated using the official Pritunl HTTP API.
+
+During the VPN setup phase, MSL Setup:
+
+1. Boots the Pritunl VM via cloud-init.
+2. Waits for the Pritunl service to become ready.
+3. Uses the Pritunl API (key/secret configured inside the VM) to:
+   - Create one or more **Organizations**
+   - Create the required **Servers** (OpenVPN / WireGuard)
+   - **Attach Organizations to Servers**
+   - **Start** the configured Servers
+
+No web UI automation is involved — everything is provisioned through the documented REST API.
+
+From the Proxmox host’s perspective, the Pritunl VM is treated as a black box VPN gateway:
+- Proxmox SDN and nftables handle routing and isolation.
+- Pritunl’s own API is used only inside that VM to define tunnel endpoints and access control.
+
+---
+
+### Security & Design Choices (FAQ)
+
+**Q: Can VM hopping be prevented?**
+
+**A:** Yes, isolation is enforced at the lab (tenant) boundary.
+
+- **Within a lab**: VMs inside the same isolated lab are allowed to talk to each other. This keeps the environment useful for realistic app, cluster, or service testing.
+- **Between labs**: Nftables + Proxmox SDN (the “Multiverse Enforcer”) prevent traffic from crossing project zones.
+- **Lab to host / management**: Forwarding to anything outside the designated VPN client pool and the upstream internet gateway is blocked by default. Host-level management networks and other labs remain dark.
+
+---
+
+**Q: How are API tokens and permissions handled?**
+
+**A:** Zelogx MSL Setup does not use the Proxmox API with tokens. It runs locally on the node and uses the native Proxmox CLI (`pvesh` and related tools) under root.
+
+- **Why root?** Configuring SDN objects, bridges, and nftables rules is inherently a system-level operation on Proxmox.
+- **Design choice**: Instead of adding another API surface (and token lifecycle) to secure, the tool relies on the existing Proxmox privilege model. All changes are visible as standard Proxmox SDN and firewall configuration, and there is no additional control plane to audit or harden.
+
 ### 1.1. What You Get (Engineer's Perspective)
 
 On a single Proxmox VE node: 
@@ -153,6 +282,11 @@ All open-source components --- reproducible setup from scratch.
 -   `zip` - Archive extraction utility
 -   `wget` or `curl` - Cloud-init image download
 -   `sha256sum` - Image integrity verification
+    
+**Guest VM packages** (auto-installed during Phase 2):
+-   `bind-utils` - `nslookup` for DNS validation
+-   `nmap-ncat` - `nc` for UDP port probe
+-   `pritunl-openvpn` - OpenVPN package from Pritunl repo (RHEL/AlmaLinux)
 
 ### 2.2. Network Design Considerations
 
@@ -232,11 +366,11 @@ cd msl-setup
 # Phase 2: VPN Setup (Pritunl VM deployment + configuration)
 ./02_vpnSetup.sh en   # Language: en|jp (default en)
 # This will execute:
-#   1. 0201_createPritunlVM.sh - Deploy Pritunl VM (Ubuntu 24.04 LTS with cloud-init)
+#   1. 0201_createPritunlVM.sh - Deploy Pritunl VM (AlmaLinux 9.7 with cloud-init)
 #      - Collect existing VM inventory (audit trail)
 #      - Auto-allocate VMID starting from 100
 #      - Auto-generate SSH key if none exists
-#      - Download Ubuntu 24.04 cloud-init image (cached for reuse)
+#      - Download AlmaLinux 9.7 cloud-init image (cached for reuse)
 #      - Create VM with 2 NICs (vmbr0/MainLAN, vpndmzvn)
 #      - Configure static IPs and routes via cloud-init
 #      - Validate network configuration remotely
