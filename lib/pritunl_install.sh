@@ -656,6 +656,8 @@ save_config_to_vm_notes() {
     # Prepend setup credentials with <BR> tags for proper line breaks in Proxmox Web UI
     local notes_header="<sup>\n\n"
     notes_header+="# Pritunl Setup Credentials\n\n"
+    notes_header+="[![Pritunl GUI](https://img.shields.io/badge/Pritunl-GUI-blue.svg)](https://${vm_ip})\n\n"
+    notes_header+="<sub>💡 Open in new tab: Ctrl+Click / Cmd+Click</sub>\n\n"
     notes_header+="**Initial Username**: pritunl<BR>\n"
     notes_header+="**Initial Password**: ${default_password}<BR>\n"
     notes_header+="## Initial credential for ssh to Pritunl VM\n\n"
