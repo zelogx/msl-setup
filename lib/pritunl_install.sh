@@ -62,7 +62,7 @@ install_pritunl_packages() {
 cat > /etc/yum.repos.d/mongodb-org.repo <<'REPO'
 [mongodb-org-8.0]
 name=MongoDB Repository
-baseurl=https://repo.mongodb.org/yum/redhat/9/mongodb-org/8.0/x86_64/
+baseurl=https://repo.mongodb.org/yum/redhat/9/mongodb-org/8.2/x86_64/
 gpgcheck=1
 enabled=1
 gpgkey=https://pgp.mongodb.com/server-8.0.asc
@@ -82,7 +82,7 @@ EOF
 cat > /etc/yum.repos.d/pritunl.repo <<'REPO'
 [pritunl]
 name=Pritunl Repository
-    baseurl=https://repo.pritunl.com/stable/yum/oraclelinux/9/
+    baseurl=https://repo.pritunl.com/stable/yum/almalinux/9/
 gpgcheck=1
 enabled=1
 gpgkey=https://raw.githubusercontent.com/pritunl/pgp/master/pritunl_repo_pub.asc
