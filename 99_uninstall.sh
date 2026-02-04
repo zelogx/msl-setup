@@ -147,15 +147,14 @@ if [ ! -f "0203_setupSelfCarePortal.sh" ]; then
     log_warn "0203_setupSelfCarePortal.sh not found"
     echo "$MSG_ASSUMING_NO_RBAC_OR_NO_CORPORATE_EDITION"
     log_info "Skipping RBAC deletion step"
+else
+    if ! bash 0203_setupSelfCarePortal.sh "$MSL_LANG" --restore; then
+        log_error "Failed to delete RBAC configurations"
+        echo "$MSG_UNINSTALL_FAILED"
+        die "RBAC deletion failed. Check logs for details."
+    fi
+    log_info "RBAC deletion completed"
 fi
-
-if ! bash 0203_setupSelfCarePortal.sh "$MSL_LANG" --restore; then
-    log_error "Failed to delete RBAC configurations"
-    echo "$MSG_UNINSTALL_FAILED"
-    die "RBAC deletion failed. Check logs for details."
-fi
-
-log_info "RBAC deletion completed"
 echo ""
 
 # ============================================================================
