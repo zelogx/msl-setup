@@ -397,6 +397,8 @@ PVEには固定IPを振ってください。
 
 ### 2.4. Quickstart
 
+> 心配なら[**既存環境への影響について**](https://github.com/zelogx/msl-setup/wiki/%E6%97%A2%E5%AD%98%E7%92%B0%E5%A2%83%E3%81%B8%E3%81%AE%E5%BD%B1%E9%9F%BF%E3%81%AB%E3%81%A4%E3%81%84%E3%81%A6)も参照してください。
+
 rootでPVEへSSHログイン。
 
 ```bash

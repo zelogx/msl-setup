@@ -46,4 +46,16 @@ mongosh pritunl --eval 'db.servers.updateMany({}, { $set: { "routes.$[].nat": tr
 systemctl restart pritunl
 ```
 
+### How to change sync address 
+To share the Pritunl portal with other address using cloudflare.<br>
+Run below and replace <your_sync_address> to FQDN or Public IP
+
+```bash
+# Run mongosh (If ubuntu, use `sudo pritunl mongodb`)
+mongosh
+test> use pritunl
+pritunl> db.hosts.updateMany({}, {$set: {sync_address: "<your_sync_address>"}})
+pritunl> quit
+sudo systemctl restart pritunl
+```
 </sup> 
