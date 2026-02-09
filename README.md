@@ -1,7 +1,7 @@
 # Multiverse Secure Lab(MSL) Setup for Proxmox by Zelogx™
 
 [![GitHub Discussions](https://img.shields.io/badge/GitHub-Discussions-181717?logo=github)](https://github.com/zelogx/msl-setup/discussions)
-[![Github Wiki](https://img.shields.io/badge/Github-Wiki-red)](https://github.com/zelogx/msl-setup/wiki/Impact-on-Existing-Environment)
+[![Github Wiki](https://img.shields.io/badge/Github-Wiki-red)](https://github.com/zelogx/msl-setup/wiki/)
 [![Ofiicial Site](https://img.shields.io/badge/Official-Site-blue)](https://www.zelogx.com)
 [![Release Notes](https://img.shields.io/badge/Release-notes-green)](https://www.zelogx.com/documents/release-notes/)
 
@@ -347,7 +347,7 @@ However, all VMs belonging to individual projects (VMnPJxx) are completely isola
 <a id="23-quickstart"></a>
 ### 2.3. Installation (Proxmox VE 9.0 or later)
 
-> Please see [**Impact on Existing Environment**](https://github.com/zelogx/msl-setup/wiki/Impact-on-Existing-Environment) if you hesitate to run.
+> Please see [**Environmental Integrity & System Impact Report**](https://github.com/zelogx/msl-setup/wiki/Environmental-Integrity-&-System-Impact-Report) if you hesitate to run.
 
 ``` bash
 apt update -y
