@@ -1,6 +1,7 @@
 # Multiverse Secure Lab(MSL) Setup – The Multi-tenant Enabler for Proxmox by Zelogx™
 
 [![GitHub Discussions](https://img.shields.io/badge/GitHub-Discussions-181717?logo=github)](https://github.com/zelogx/msl-setup/discussions)
+[![Github Wiki](https://img.shields.io/badge/Github-Wiki-red)](https://github.com/zelogx/msl-setup/wiki/)
 [![Ofiicial Site](https://img.shields.io/badge/オフィシャル-サイト-blue)](https://www.zelogx.com/ja/)
 [![Release Notes](https://img.shields.io/badge/リリース-ノート-green)](https://www.zelogx.com/ja/documents/release-notes/)
 
