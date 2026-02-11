@@ -1,8 +1,8 @@
-# Multiverse Secure Lab(MSL) Setup – The Multi-tenant Enabler for Proxmox by Zelogx™
+# Multiverse Secure Lab (MSL) Setup – The Multi-tenant Enabler for Proxmox by Zelogx™
 
 [![GitHub Discussions](https://img.shields.io/badge/GitHub-Discussions-181717?logo=github)](https://github.com/zelogx/msl-setup/discussions)
-[![Github Wiki](https://img.shields.io/badge/Github-Wiki-red)](https://github.com/zelogx/msl-setup/wiki/)
-[![Ofiicial Site](https://img.shields.io/badge/オフィシャル-サイト-blue)](https://www.zelogx.com/ja/)
+[![GitHub Wiki](https://img.shields.io/badge/GitHub-Wiki-red)](https://github.com/zelogx/msl-setup/wiki/)
+[![Official Site](https://img.shields.io/badge/オフィシャル-サイト-blue)](https://www.zelogx.com/ja/)
 [![Release Notes](https://img.shields.io/badge/リリース-ノート-green)](https://www.zelogx.com/ja/documents/release-notes/)
 
 Zelogx™ MSL Setup (Multiverse Secure Lab Setup) は、1台のProxmoxサーバーを仮想的に分割し、案件ごと・チームごとにマルチテナント環境を作るマルチテナント化セットアップツールです。
@@ -11,10 +11,8 @@ Zelogx™ MSL Setup (Multiverse Secure Lab Setup) は、1台のProxmoxサーバ�
 
 このリポジトリは、その Personal / Community Edition を提供します。
 
-Hola! Enjoying your self-hosted stack?
-Why not offer a secure slice of it to your team?
-Refer to REAMME_en.md for English documents.
-> [English version is here (README.md)](./README.md) <BR>
+Refer to README.md for English documents.
+> [English: README.md](./README.md) <BR>
 > Official Web Site is [here](https://www.zelogx.com)
 
 ## 概要
@@ -24,6 +22,43 @@ Refer to REAMME_en.md for English documents.
 
 以下はアーキテクチャ図。
 ![Zelogx MSL Setup Network Overview](docs/assets/zelogx-MSL-Setup.svg)
+
+## 0. Quickstart
+
+> [**既存環境への影響はほとんどの場合ありません**](https://github.com/zelogx/msl-setup/wiki/%E6%97%A2%E5%AD%98%E7%92%B0%E5%A2%83%E3%81%B8%E3%81%AE%E5%BD%B1%E9%9F%BF%E3%81%AB%E3%81%A4%E3%81%84%E3%81%A6)も参照してください。<BR>
+> また対話式インストーラは重複ネットワーク検出機能があり、Proxmox内の既設ネットワークと重複するアドレスは指定できない仕組みです。<BR>
+> [インストール方法解説記事](https://github.com/zelogx/msl-setup/wiki/%E8%87%AA%E5%AE%85%E3%81%AEPVE%E3%81%AB%E3%83%9E%E3%83%AB%E3%83%81%E3%83%86%E3%83%8A%E3%83%B3%E3%83%88%E5%8C%96%E3%83%84%E3%83%BC%E3%83%AB%E3%82%92%E5%85%A5%E3%82%8C%E3%81%A6%E3%81%BF%E3%81%BE%E3%81%97%E3%81%9F%E3%80%82%E3%82%A4%E3%83%B3%E3%82%B9%E3%83%88%E3%83%BC%E3%83%AB%E7%B7%A8)<BR>
+
+rootでPVEへSSHログイン。
+
+```bash
+apt update -y
+apt install -y git ipcalc jq zip
+
+# Corporate editionの場合
+# Downloadしたzipファイルをscpなどで置いてください。
+unzip msl-setup-pro-1.x.x_corporate.zip    # change x to correct version number
+cd msl-setup-pro-1.x.x_corporate
+
+# Personal editionの場合
+git clone https://github.com/zelogx/msl-setup.git
+cd msl-setup
+
+# Phase 1: ネットワークセットアップ (設定確認 + SDN構築)
+./01_networkSetup.sh jp   # 言語: en|jp (省略時 en)
+# Phase 1 完了後、ルーター設定を実施してください（ポートフォワード、静的ルート）
+# Phase 1 終了時に表示される指示に従ってください
+
+# Phase 2: VPN セットアップ (Pritunl VM 展開 + 設定)
+./02_vpnSetup.sh jp   # 言語: en|jp (デフォルトen)
+
+# Phase 3 (Pro Corporate エディション専用): RBAC Self-Care ポータルセットアップ
+./0203_setupSelfCarePortal.sh jp   # 言語: en|jp (省略時 en)
+
+# (任意) MSLセットアップを完全にアンインストール
+./99_uninstall.sh jp   # 言語: en|jp (省略時 en)
+```
+
 
 ## 1. 今回作ったものの超概要
 
@@ -171,8 +206,6 @@ Proxmox VEサーバ一台で
 - VLAN対応機器は不要
 - **【Corporate Edition 限定】** セルフケアポータル。これによりVPNクライアントも含むプロジェクトメンバが、自分たちのプロジェクトネットワーク内で自由にVMの作成・削除・起動・停止・スナップショット作成・バックアップ作成などを実施できるようになります。管理者の手を借りずに実現可能。
 
-うんちく良いから早く構築方法教えてという方は[こちら](#24-quickstart)
-
 ### 1.2. この手順でできること（管理者・経営者目線で）
 
 - 開発パートナー／オフショア／フリーランスにも必要な環境だけ見せて接続させる事でセキュリティ向上、他PJの情報漏洩問題を仕組みで回避
@@ -300,7 +333,7 @@ CPU性能として約3.3〜3.4倍の差が見られる。
 - BCP、業務の継続運転は重要です。が、ここまでくるとクラウドとハイブリッド運用が必要です。S3へバックアップする機能もあるので、その辺は有償でコンサルします。
 - WiFiからの侵入/物理セキュリティ。WPA3への切り替え検討。そもそも入退室が自由な会社は、そんな大事な環境作ってはいけません。
 
-## 2. 構築手順 (Quickstart)
+## 2. 開始方法
 
 さて、ここからは具体的な構築手順です。
 全部オープンなOSS構成で再現可能な手順を載せます。
@@ -396,7 +429,7 @@ Proxmox VEが接続しているサブネットワーク以外にセグメント�
 本ドキュメントはPVE 9.0.11で動作の確認を取っております。
 PVEには固定IPを振ってください。
 
-### 2.4. Quickstart
+### 2.4. インストール方法
 
 > 心配なら[**既存環境への影響について**](https://github.com/zelogx/msl-setup/wiki/%E6%97%A2%E5%AD%98%E7%92%B0%E5%A2%83%E3%81%B8%E3%81%AE%E5%BD%B1%E9%9F%BF%E3%81%AB%E3%81%A4%E3%81%84%E3%81%A6)も参照してください。
 
@@ -409,9 +442,8 @@ apt install -y git ipcalc jq zip
 
 # Corporate editionの場合
 unzip msl-setup-pro-1.x.x_corporate.zip    # change x to correct version number
-cd proxmox-msl-setup-1.x.x_corporate
+cd msl-setup-pro-1.x.x_corporate
 # Personal editionの場合
-apt install -y git
 git clone https://github.com/zelogx/msl-setup.git
 cd msl-setup
 

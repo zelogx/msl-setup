@@ -1,8 +1,8 @@
-# Multiverse Secure Lab(MSL) Setup for Proxmox by Zelogx™
+# Multiverse Secure Lab (MSL) Setup for Proxmox by Zelogx™
 
 [![GitHub Discussions](https://img.shields.io/badge/GitHub-Discussions-181717?logo=github)](https://github.com/zelogx/msl-setup/discussions)
-[![Github Wiki](https://img.shields.io/badge/Github-Wiki-red)](https://github.com/zelogx/msl-setup/wiki/)
-[![Ofiicial Site](https://img.shields.io/badge/Official-Site-blue)](https://www.zelogx.com)
+[![GitHub Wiki](https://img.shields.io/badge/GitHub-Wiki-red)](https://github.com/zelogx/msl-setup/wiki/)
+[![Official Site](https://img.shields.io/badge/Official-Site-blue)](https://www.zelogx.com)
 [![Release Notes](https://img.shields.io/badge/Release-notes-green)](https://www.zelogx.com/documents/release-notes/)
 
 
@@ -16,13 +16,49 @@ Concretely, it configures Proxmox SDN (Simple Zones + VNets) and firewall rules 
 
 © 2025 Zelogx. Zelogx™ and the Zelogx logo are trademarks of the Zelogx Project. All other marks are property of their respective owners.
 
-## 1. Overview
+## 0. Overview
 
 This project builds **completely isolated development environments per project** by Layer 2 level, accessible securely via VPN.\
 It's a blueprint for **low-cost distributed development**, offshore projects, or private team labs.
 
 See below for architecture diagram.
 ![Zelogx MSL Setup Network Overview](docs/assets/zelogx-MSL-Setup.svg)
+
+## 1. Quickstart
+> Please see [**Environmental Integrity & System Impact Report**](https://github.com/zelogx/msl-setup/wiki/Environmental-Integrity-&-System-Impact-Report) if you hesitate to run.<BR>
+> The interactive installer detects overlapping networks and prevents you from selecting addresses that conflict with existing networks inside Proxmox.<BR>
+> Please refer to [**Step-by-Step Install instruction**](https://github.com/zelogx/msl-setup/wiki/I-Tried-Installing-a-Multi%E2%80%90Tenant-Tool-on-My-Home-PVE-%E2%80%93-Install-Edition) also for detail installation steps.
+
+
+``` bash
+apt update -y
+apt install -y ipcalc jq zip
+# Place the zip file on the proxmox server using scp or similar.
+
+# In Corporate edition,
+unzip msl-setup-pro-1.x.x_corporate.zip    # change x to correct version number
+cd msl-setup-pro-1.x.x_corporate
+
+# In MSL Setup (Personal Edition),
+apt install -y git
+git clone https://github.com/zelogx/msl-setup.git
+cd msl-setup
+
+# Phase 1: Network Setup (check config + SDN setup)
+./01_networkSetup.sh en   # Language: en|jp (default en)
+
+# Phase 2: VPN Setup (Pritunl VM deployment + configuration)
+./02_vpnSetup.sh en   # Language: en|jp (default en)
+
+# Phase 3 (Pro Corporate only): RBAC Self-Care Portal Setup
+./0203_setupSelfCarePortal.sh en   # Language: en|jp (default en)
+
+# (Optional) Uninstall MSL setup completely
+./99_uninstall.sh en   # Language: en|jp (default en)
+# This will:
+#   1. Destroy Pritunl VM (calls 0201_createPritunlVM.sh --destroy)
+#   2. Restore network configuration to backup state (calls 0102_setupNetwork.sh --restore)
+```
 
 ### Motivation
 
@@ -164,8 +200,6 @@ On a single Proxmox VE node:
 - No VLAN-capable switches required.
 - **Corporate Edition only** Self-service VM management within your project network: project members can independently create, delete, start, stop VMs, and manage snapshots and backups without administrator intervention.
 
-For those who just want to build it now --- jump to [Quickstart](#23-quickstart).
-
 ### 1.2. What You Get (Manager's Perspective)
 
 - Grant access **only to what each partner/freelancer needs**, preventing cross-project leaks by design.
@@ -174,7 +208,7 @@ For those who just want to build it now --- jump to [Quickstart](#23-quickstart)
 - Entirely open-source --- all you need is **one small server (even a NUC)** and \~¥1,000/month for electricity.
 - No vendor lock-in, no subscription required.
 
-> Equivalent commercial setups cost millions of yen with maintenance contracts.\
+> Enterprise-grade solutions with similar capabilities are typically positioned at a significantly higher cost range.\
 > This achieves the same goal for (almost) zero cost.
 
 ### 1.3. Reference: Commercial Alternatives
@@ -270,7 +304,7 @@ Refer to : [gadgetversus](https://gadgetversus.com/processor/intel-xeon-platinum
 | Data loss        | Backup to S3-compatible storage                 |
 | Physical access  | Keep servers in restricted rooms or home labs   |
 
-## 2. Quickstart
+## 2. Get started
 
 All open-source components --- reproducible setup from scratch.
 
@@ -344,7 +378,6 @@ However, all VMs belonging to individual projects (VMnPJxx) are completely isola
 - Some routers limit the number of port-forwarding entries. For example, Buffalo routers allow a maximum of 32. Therefore, when deciding value 5, you should also consider your router’s maximum port-forwarding capacity.
 - Also, if you are using IPoE with ND Proxy / MAP-E / DS-Lite, there are restrictions on available ports, so you must check in advance.
 
-<a id="23-quickstart"></a>
 ### 2.3. Installation (Proxmox VE 9.0 or later)
 
 > Please see [**Environmental Integrity & System Impact Report**](https://github.com/zelogx/msl-setup/wiki/Environmental-Integrity-&-System-Impact-Report) if you hesitate to run.
