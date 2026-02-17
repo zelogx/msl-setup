@@ -402,6 +402,11 @@ runcmd:
   - systemctl start qemu-guest-agent
   - growpart /dev/sda 1 || true
   - xfs_growfs / || true
+  - fallocate -l 2G /swapfile
+  - chmod 600 /swapfile
+  - mkswap /swapfile
+  - echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  - swapon /swapfile
   - rm -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf
   - rm -f /etc/ssh/sshd_config.d/50-cloud-init.conf
   - |
