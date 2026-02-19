@@ -44,6 +44,10 @@ cd msl-setup-pro-1.x.x_corporate
 git clone https://github.com/zelogx/msl-setup.git
 cd msl-setup
 
+
+# Phase 0: TUI 自動ネットワーク設定 (既設ネットワーク確認とネットワークアドレス設定)
+./00_configNetwork.sh jp  # 言語: en|jp (省略時 en)
+
 # Phase 1: ネットワークセットアップ (設定確認 + SDN構築)
 ./01_networkSetup.sh jp   # 言語: en|jp (省略時 en)
 # Phase 1 完了後、ルーター設定を実施してください（ポートフォワード、静的ルート）
@@ -53,7 +57,7 @@ cd msl-setup
 ./02_vpnSetup.sh jp   # 言語: en|jp (デフォルトen)
 
 # Phase 3 (Pro Corporate エディション専用): RBAC Self-Care ポータルセットアップ
-./0203_setupSelfCarePortal.sh jp   # 言語: en|jp (省略時 en)
+./0301_setupSelfCarePortal.sh jp   # 言語: en|jp (省略時 en)
 
 # (任意) MSLセットアップを完全にアンインストール
 ./99_uninstall.sh jp   # 言語: en|jp (省略時 en)
@@ -470,7 +474,7 @@ cd msl-setup
 #   2. 0202_configurePritunl.sh - Pritunl サーバー、組織、ユーザー設定
 
 # Phase 3 (Pro Corporate エディション専用): RBAC Self-Care ポータルセットアップ
-./0203_setupSelfCarePortal.sh jp   # 言語: en|jp (省略時 en)
+./0301_setupSelfCarePortal.sh jp   # 言語: en|jp (省略時 en)
 # これにより以下を実行:
 #   1. 現在の RBAC 状態をバックアップ（Pool、Group、User、ACL、Firewallルール）
 #   2. 既存リソースとの ACL 競合を確認

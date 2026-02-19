@@ -42,32 +42,6 @@ if [[ "$LANG_ARG" != "en" && "$LANG_ARG" != "jp" ]]; then
 fi
 
 ################################################################################
-# Phase 1.1: Check and Configure Network Environment
-################################################################################
-echo ""
-echo "=========================================="
-if [[ "$LANG_ARG" == "jp" ]]; then
-    echo "フェーズ 1.1: ネットワーク環境チェック"
-else
-    echo "Phase 1.1: Network Environment Check"
-fi
-echo "=========================================="
-echo ""
-
-if ! ./0101_checkConfigNetwork.sh "$LANG_ARG"; then
-    if [[ "$LANG_ARG" == "jp" ]]; then
-        echo ""
-        echo "エラー: ネットワーク設定チェックが失敗しました"
-        echo "詳細はログを確認してください: logs/"
-    else
-        echo ""
-        echo "ERROR: Network configuration check failed"
-        echo "Check logs for details: logs/"
-    fi
-    exit 1
-fi
-
-################################################################################
 # Phase 1.2: Setup Proxmox SDN and Firewall
 ################################################################################
 echo ""

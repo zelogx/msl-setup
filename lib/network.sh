@@ -433,52 +433,38 @@ detect_existing_networks() {
     fi
     
     # Normalize all networks to network addresses and remove duplicates
-    local normalized_networks=()
-    local seen_networks=()
-    
     if [[ ${#networks[@]} -gt 0 ]]; then
-        # First pass: normalize each CIDR to its network address
-        for cidr in "${networks[@]}"; do
-            local normalized
-            # Use ipcalc to get the actual network address
-            normalized=$(ipcalc "$cidr" 2>/dev/null | grep -oP 'Network:\s+\K[\d.]+/\d+' || echo "$cidr")
-            normalized_networks+=("$normalized")
-        done
-        
-        # Second pass: remove duplicates and sort
-        local unique_networks
-        unique_networks=$(printf '%s\n' "${normalized_networks[@]}" | sort -u -t. -k1,1n -k2,2n -k3,3n -k4,4n)
-        
-        # Third pass: remove networks that are subsets of larger networks
-        local final_networks=()
-        while IFS= read -r net1; do
-            [[ -z "$net1" ]] && continue
-            local is_subset=false
-            
-            # Check if net1 is contained in any other network
-            while IFS= read -r net2; do
-                [[ -z "$net2" ]] && continue
-                [[ "$net1" == "$net2" ]] && continue
-                
-                # If net1 is contained within net2, skip net1
-                if cidr_contains "$net2" "${net1%/*}" 2>/dev/null; then
-                    # Also check that net2 is actually larger (not equal)
-                    local prefix1="${net1#*/}"
-                    local prefix2="${net2#*/}"
-                    if [[ "$prefix2" -lt "$prefix1" ]]; then
-                        is_subset=true
-                        break
-                    fi
-                fi
-            done <<< "$unique_networks"
-            
-            if [[ "$is_subset" == "false" ]]; then
-                final_networks+=("$net1")
-            fi
-        done <<< "$unique_networks"
-        
-        # Print final deduplicated and normalized networks
-        printf '%s\n' "${final_networks[@]}" | sort -u -t. -k1,1n -k2,2n -k3,3n -k4,4n
+        # Pass all raw CIDRs to Python for normalize + dedup + subset-removal
+        # Python ipaddress module replaces: ipcalc (pass1), sort-dedup (pass2),
+        # and the O(n^2) cidr_contains bash loop (pass3, was ~13s for 25 entries)
+        printf '%s\n' "${networks[@]}" | python3 - <<'PYEOF'
+import sys
+from ipaddress import IPv4Network
+
+raw = [line.strip() for line in sys.stdin if line.strip()]
+
+# Pass 1: normalize to network address (replaces ipcalc)
+normalized = []
+for cidr in raw:
+    try:
+        normalized.append(IPv4Network(cidr, strict=False))
+    except ValueError:
+        pass
+
+# Pass 2: remove duplicates
+unique = list(dict.fromkeys(normalized))
+
+# Pass 3: remove subnets contained in a larger network (O(n^2) but pure Python)
+final = []
+for net in unique:
+    if not any(net != other and net.subnet_of(other) for other in unique):
+        final.append(net)
+
+# Sort by network address
+final.sort()
+for net in final:
+    print(net)
+PYEOF
     fi
 }
 

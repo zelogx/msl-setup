@@ -44,14 +44,17 @@ apt install -y git
 git clone https://github.com/zelogx/msl-setup.git
 cd msl-setup
 
+# Phase 0: TUI Network Auto Configuration (Check existing network + Automatic network config)
+./00_configNetwork.sh en  # Language: en|jp (default en)
+
 # Phase 1: Network Setup (check config + SDN setup)
 ./01_networkSetup.sh en   # Language: en|jp (default en)
 
 # Phase 2: VPN Setup (Pritunl VM deployment + configuration)
-./02_vpnSetup.sh en   # Language: en|jp (default en)
+./02_vpnSetup.sh en       # Language: en|jp (default en)
 
 # Phase 3 (Pro Corporate only): RBAC Self-Care Portal Setup
-./0203_setupSelfCarePortal.sh en   # Language: en|jp (default en)
+./0301_setupSelfCarePortal.sh en   # Language: en|jp (default en)
 
 # (Optional) Uninstall MSL setup completely
 ./99_uninstall.sh en   # Language: en|jp (default en)
@@ -418,7 +421,7 @@ cd msl-setup
 #   2. 0202_configurePritunl.sh - Configure Pritunl servers, organizations, and users
 
 # Phase 3 (Pro Corporate only): RBAC Self-Care Portal Setup
-./0203_setupSelfCarePortal.sh en   # Language: en|jp (default en)
+./0301_setupSelfCarePortal.sh en   # Language: en|jp (default en)
 # This will:
 #   1. Backup current RBAC state (pools, groups, users, ACL, firewall rules)
 #   2. Check for ACL conflicts with existing resources
