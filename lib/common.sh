@@ -45,8 +45,13 @@ readonly TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 # Create required directories
 mkdir -p "${BACKUP_DIR}" "${LOG_DIR}"
 
-# Log file (base). Individual scripts may log context name.
-readonly LOG_FILE="${LOG_DIR}/msl-setup_${TIMESTAMP}.log"
+# Log file (base). Use MSL_TIMESTAMP from environment if available (for session-wide unified logging),
+# otherwise fall back to script-local timestamp.
+if [[ -n "${MSL_TIMESTAMP:-}" ]]; then
+    readonly LOG_FILE="${LOG_DIR}/msl-setup_${MSL_TIMESTAMP}.log"
+else
+    readonly LOG_FILE="${LOG_DIR}/msl-setup_${TIMESTAMP}.log"
+fi
 
 # Verbose mode flag (set by script arguments, default: false)
 MSL_VERBOSE="${MSL_VERBOSE:-false}"

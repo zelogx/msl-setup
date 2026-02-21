@@ -41,6 +41,9 @@ from ipaddress import IPv4Network, IPv4Address, ip_address
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = SCRIPT_DIR
 
+# Generate a single timestamp for this entire session (all subprocess.run calls will share it)
+MSL_TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+
 TIMING_LOG = "/tmp/0101_timing.log"
 
 def _tlog(msg: str) -> None:
@@ -231,6 +234,7 @@ class BashRunner:
     def _run_bash(self, script: str) -> Tuple[int, str, str]:
         env = os.environ.copy()
         env["MSL_LANG"] = self.lang
+        env["MSL_TIMESTAMP"] = MSL_TIMESTAMP  # Pass unified timestamp to subprocess
         result = subprocess.run(
             ["bash", "-c", script],
             cwd=SCRIPT_DIR,
