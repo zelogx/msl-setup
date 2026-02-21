@@ -74,7 +74,7 @@ source "${PROJECT_ROOT}/lib/input_functions.sh"
 source "${PROJECT_ROOT}/lib/env_generator.sh"
 source "${PROJECT_ROOT}/lib/svg_generator.sh"
 source "${PROJECT_ROOT}/lib/router_prompt.sh"
-
+２
 # Load language-specific messages
 if [[ "${MSL_LANG}" == "en" ]]; then
     source "${PROJECT_ROOT}/lib/messages_en.sh"

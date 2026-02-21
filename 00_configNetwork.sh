@@ -108,7 +108,7 @@ MESSAGES = {
         # .env generation confirmation dialog
         "generate_title": "Generate .env Configuration",
         "generate_msg1": "Ready to generate .env file",
-        "generate_msg2": "with the following configuration.",
+        "generate_msg2": "with the current configuration.",
         "generate_msg3": "Continue?",
         "generate_yes": "[Y] Yes",
         "generate_no": "[N] No",
@@ -124,6 +124,18 @@ MESSAGES = {
         "load_env_msg2": "Load it?",
         "load_env_yes": "[Y] Yes",
         "load_env_no": "[N] No",
+        # SVG generation dialog
+        "svg_dialog_title": "Add Network Diagram to Proxmox Notes",
+        "svg_dialog_msg": "Do you like to add Network Diagram",
+        "svg_dialog_msg2": "to Proxmox Notes?",
+        "svg_dialog_yes": "[Y] Yes",
+        "svg_dialog_no": "[N] No",
+        # SVG result dialogs
+        "svg_success_title": "Network Diagram",
+        "svg_success_msg": "Network diagram added to Proxmox notes.",
+        "svg_fail_title": "Network Diagram",
+        "svg_fail_msg": "Failed to add network diagram to Proxmox notes.",
+        "notice_ok": "[O] OK",
     },
     LANG_JP: {
         "title": "Zelogx MSL Setup ネットワーク設定",
@@ -193,6 +205,18 @@ MESSAGES = {
         "load_env_msg2": "読み込みますか？",
         "load_env_yes": "[Y] はい",
         "load_env_no": "[N] いいえ",
+        # SVG generation dialog
+        "svg_dialog_title": "Proxmox ノートにネットワーク図を追加",
+        "svg_dialog_msg": "Proxmox ノートにネットワーク図を",
+        "svg_dialog_msg2": "追加しますか？",
+        "svg_dialog_yes": "[Y] はい",
+        "svg_dialog_no": "[N] いいえ",
+        # SVG result dialogs
+        "svg_success_title": "ネットワーク図",
+        "svg_success_msg": "ネットワーク図をProxmoxノートに追加しました。",
+        "svg_fail_title": "ネットワーク図",
+        "svg_fail_msg": "ネットワーク図の追加に失敗しました。",
+        "notice_ok": "[O] OK",
     },
 }
 
@@ -248,15 +272,15 @@ class BashRunner:
             pool_net = IPv4Network(pool_cidr, strict=False)
             # Split into two halves: OpenVPN (/25) and WireGuard (/25)
             ovpn_net, wg_net = list(pool_net.subnets(new_prefix=pool_net.prefixlen + 1))
-            
+
             result["VPN_POOL"] = pool_cidr
             result["OVPN_POOL"] = str(ovpn_net)
             result["WG_POOL"] = str(wg_net)
-            
+
             # Further split each half into NUM_PJ subnets (/28 for /25)
             ovpn_subnets = list(ovpn_net.subnets(new_prefix=ovpn_net.prefixlen + (num_pj - 1).bit_length()))[:num_pj]
             wg_subnets = list(wg_net.subnets(new_prefix=wg_net.prefixlen + (num_pj - 1).bit_length()))[:num_pj]
-            
+
             for i, subnet in enumerate(ovpn_subnets, 1):
                 result[f"OVPN_POOL{i}"] = str(subnet)
             for i, subnet in enumerate(wg_subnets, 1):
@@ -406,6 +430,121 @@ generate_env
         code, out, err = self._run_bash(script)
         if code != 0:
             raise RuntimeError(err.strip() or "generate_env failed")
+
+    def generate_svg(self) -> None:
+        """Generate SVG network diagram and update Proxmox notes (pure Python implementation)."""
+        import re
+        import shutil
+        import socket
+        
+        # Paths
+        env_file = os.path.join(SCRIPT_DIR, ".env")
+        output_dir = os.path.join(SCRIPT_DIR, "docs", "generated")
+        output_file = os.path.join(output_dir, "network-diagram.svg")
+        
+        # Read .env file
+        if not os.path.isfile(env_file):
+            raise RuntimeError(f".env file not found: {env_file}")
+        
+        env_vars = {}
+        with open(env_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    # Remove quotes
+                    value = value.strip('"').strip("'")
+                    env_vars[key.strip()] = value
+        
+        # Get NUM_PJ to select template
+        num_pj = env_vars.get("NUM_PJ", "8")
+        template_file = os.path.join(SCRIPT_DIR, "docs", "assets", f"zelogx-MSL-Setup-template-{num_pj}.svg")
+        
+        if not os.path.isfile(template_file):
+            raise RuntimeError(f"SVG template not found: {template_file} (NUM_PJ={num_pj})")
+        
+        # Read template
+        with open(template_file, "r", encoding="utf-8") as f:
+            svg_content = f.read()
+        
+        # Replace all placeholders ${VAR} with values from .env
+        for key, value in env_vars.items():
+            placeholder = f"${{{key}}}"
+            svg_content = svg_content.replace(placeholder, value)
+        
+        # Create output directory
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Write SVG file
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(svg_content)
+        
+        # Copy SVG to Proxmox web directory
+        svg_web_name = "msl-setup-network-diagram.svg"
+        svg_web_path = f"/usr/share/pve-manager/images/{svg_web_name}"
+        
+        try:
+            shutil.copy2(output_file, svg_web_path)
+            os.chmod(svg_web_path, 0o644)
+        except Exception as e:
+            raise RuntimeError(f"Failed to copy SVG to {svg_web_path}: {e}")
+        
+        # Update Proxmox notes
+        node_name = socket.gethostname()
+        
+        # Get current notes via pvesh
+        result = subprocess.run(
+            ["pvesh", "get", f"/nodes/{node_name}/config", "--output-format", "json"],
+            capture_output=True,
+            text=True
+        )
+        
+        existing_notes = ""
+        if result.returncode == 0:
+            try:
+                import json
+                data = json.loads(result.stdout)
+                existing_notes = data.get("description", "").rstrip()
+            except:
+                pass
+        
+        # Create new notes content
+        new_content = f"""
+---
+MSL Setup - Network Diagram
+
+<img src="/pve2/images/{svg_web_name}">"""
+        
+        # Remove existing MSL Setup diagram block if present
+        if "msl-setup-network-diagram.svg" in existing_notes or "MSL Setup - Network Diagram" in existing_notes:
+            # Remove from marker to end
+            lines = existing_notes.split("\n")
+            new_lines = []
+            skip = False
+            for line in lines:
+                if "MSL Setup - Network Diagram" in line:
+                    skip = True
+                if not skip:
+                    new_lines.append(line)
+            # Remove trailing separator if present
+            while new_lines and new_lines[-1].strip() == "---":
+                new_lines.pop()
+            existing_notes = "\n".join(new_lines)
+        
+        full_notes = existing_notes + new_content
+        
+        # Update notes via pvesh
+        result = subprocess.run(
+            ["pvesh", "set", f"/nodes/{node_name}/config", "--description", full_notes],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to update Proxmox notes: {result.stderr}")
+
 
 
 class TUIApp:
@@ -679,134 +818,38 @@ class TUIApp:
             return (False, f"Port conflict: OpenVPN ({min(ovpn_range)}-{max(ovpn_range)}) overlaps WireGuard ({min(wg_range)}-{max(wg_range)})")
         return (True, "")
 
-    def _show_exit_confirm(self) -> bool:
-        """Show exit confirmation dialog with Discard/Cancel options."""
-        h, w = self.stdscr.getmaxyx()
-        dialog_h = 8
-        dialog_w = 60
-        y = max(2, (h - dialog_h) // 2)
-        x = max(0, (w - dialog_w) // 2)
-        
-        # Constrain dialog to fit within screen
-        dialog_w = min(dialog_w, w - 2)
-        dialog_h = min(dialog_h, h - 2)
-        
-        # Draw dialog background
-        for row in range(y, min(y + dialog_h, h)):
+    def _show_dialog(
+        self,
+        mode: str,
+        title: str,
+        lines: List[str],
+        yes_text: str = "",
+        no_text: str = "",
+        ok_text: str = "",
+        default_yes: bool = True,
+        refresh_screen: bool = False,
+    ) -> bool | None:
+        """Show a dialog (confirm or notice).
+
+        mode: "confirm" or "notice"
+        Returns True/False for confirm, None for notice.
+        """
+        if refresh_screen:
             try:
-                self.stdscr.addstr(row, x, " " * (dialog_w - 1), curses.color_pair(1) | curses.A_REVERSE)
+                self.stdscr.erase()
+                self._render()
+                self.stdscr.refresh()
             except curses.error:
                 pass
-        
-        # Title
-        try:
-            title = self.msg.get("exit_title", "Exit MSL Setup")
-            self.stdscr.addstr(y, x + 2, title[:dialog_w - 4], curses.color_pair(1) | curses.A_BOLD)
-        except curses.error:
-            pass
-        
-        # Message
-        try:
-            msg1 = self.msg.get("exit_msg1", "Are you sure you want to exit")
-            msg2 = self.msg.get("exit_msg2", "without saving?")
-            self.stdscr.addstr(y + 2, x + 2, msg1[:dialog_w - 4], curses.color_pair(1))
-            if msg2:
-                self.stdscr.addstr(y + 3, x + 2, msg2[:dialog_w - 4], curses.color_pair(1))
-        except curses.error:
-            pass
-        
-        # Options
-        try:
-            discard_opt = self.msg.get("exit_discard", "[D] Discard")
-            cancel_opt = self.msg.get("exit_cancel", "[C] Cancel")
-            options_text = f"{discard_opt}  {cancel_opt}"
-            self.stdscr.addstr(y + 5, x + 5, options_text[:dialog_w - 10], curses.color_pair(1))
-        except curses.error:
-            pass
-        
-        self.stdscr.refresh()
-        
-        # Wait for user input
-        while True:
-            try:
-                ch = self.stdscr.getch()
-                if ch in (ord('D'), ord('d')):
-                    return False  # Exit application
-                elif ch in (ord('C'), ord('c')):
-                    self.status = self.msg["status_ready"]
-                    return True  # Close dialog, continue
-            except:
-                pass
 
-    def _show_generate_confirm(self) -> bool:
-        """Show .env generation confirmation dialog."""
         h, w = self.stdscr.getmaxyx()
-        dialog_h = 10
-        dialog_w = 70
-        y = max(2, (h - dialog_h) // 2)
-        x = max(0, (w - dialog_w) // 2)
-        
-        # Constrain dialog to fit within screen
-        dialog_w = min(dialog_w, w - 2)
-        dialog_h = min(dialog_h, h - 2)
-        
-        # Draw dialog background
-        for row in range(y, min(y + dialog_h, h)):
-            try:
-                self.stdscr.addstr(row, x, " " * (dialog_w - 1), curses.color_pair(1) | curses.A_REVERSE)
-            except curses.error:
-                pass
-        
-        # Title
-        try:
-            msg = self.msg.get("generate_title", "Generate .env Configuration")
-            self.stdscr.addstr(y, x + 2, msg[:dialog_w - 4], curses.color_pair(1) | curses.A_BOLD)
-        except curses.error:
-            pass
-        
-        # Message
-        try:
-            msg1 = self.msg.get("generate_msg1", "Ready to generate .env file")
-            msg2 = self.msg.get("generate_msg2", "with the following configuration.")
-            msg3 = self.msg.get("generate_msg3", "Continue?")
-            self.stdscr.addstr(y + 2, x + 2, msg1[:dialog_w - 4], curses.color_pair(1))
-            self.stdscr.addstr(y + 3, x + 2, msg2[:dialog_w - 4], curses.color_pair(1))
-            self.stdscr.addstr(y + 4, x + 2, msg3[:dialog_w - 4], curses.color_pair(1))
-        except curses.error:
-            pass
-        
-        # Options
-        try:
-            yes_opt = self.msg.get("generate_yes", "[Y] Yes")
-            no_opt = self.msg.get("generate_no", "[N] No")
-            options_text = f"{yes_opt}  {no_opt}"
-            self.stdscr.addstr(y + 6, x + 10, options_text[:dialog_w - 20], curses.color_pair(1))
-        except curses.error:
-            pass
-        
-        self.stdscr.refresh()
-        
-        # Wait for user input
-        while True:
-            try:
-                ch = self.stdscr.getch()
-                if ch in (ord('Y'), ord('y')):
-                    return True   # Proceed with generation
-                elif ch in (ord('N'), ord('n')):
-                    self.status = self.msg["status_ready"]
-                    return False  # Cancel generation
-            except:
-                pass
-
-    def _show_env_result(self, success: bool, error_msg: str = "") -> None:
-        """Show result dialog after .env save attempt (success or failure)."""
-        h, w = self.stdscr.getmaxyx()
-        dialog_h = 10
+        dialog_h = 10 if mode == "confirm" else 8
         dialog_w = 70
         y = max(2, (h - dialog_h) // 2)
         x = max(0, (w - dialog_w) // 2)
 
         dialog_w = min(dialog_w, w - 2)
+        dialog_h = min(dialog_h, h - 2)
 
         # Background
         for row in range(y, min(y + dialog_h, h)):
@@ -815,44 +858,144 @@ class TUIApp:
             except curses.error:
                 pass
 
+        # Border
+        try:
+            for col in range(x, x + dialog_w - 1):
+                self.stdscr.addch(y, col, curses.ACS_HLINE, curses.color_pair(1))
+                self.stdscr.addch(y + dialog_h - 1, col, curses.ACS_HLINE, curses.color_pair(1))
+            for row in range(y, y + dialog_h - 1):
+                self.stdscr.addch(row, x, curses.ACS_VLINE, curses.color_pair(1))
+                self.stdscr.addch(row, x + dialog_w - 2, curses.ACS_VLINE, curses.color_pair(1))
+            self.stdscr.addch(y, x, curses.ACS_ULCORNER, curses.color_pair(1))
+            self.stdscr.addch(y, x + dialog_w - 2, curses.ACS_URCORNER, curses.color_pair(1))
+            self.stdscr.addch(y + dialog_h - 1, x, curses.ACS_LLCORNER, curses.color_pair(1))
+            self.stdscr.addch(y + dialog_h - 1, x + dialog_w - 2, curses.ACS_LRCORNER, curses.color_pair(1))
+        except curses.error:
+            pass
+
         # Title
-        if success:
-            title = self.msg.get("env_success_title", "Configuration Saved")
-            msg = self.msg.get("env_success_msg", "Configuration successfully saved to .env")
-            attr = curses.color_pair(1)
-        else:
-            title = self.msg.get("env_fail_title", "Save Failed")
-            msg = error_msg if error_msg else self.msg.get("env_fail_msg", "Failed to save configuration to .env")
-            attr = curses.color_pair(1)
-
         try:
-            self.stdscr.addstr(y, x + 2, title[:dialog_w - 4], attr | curses.A_BOLD)
+            self.stdscr.addstr(y, x + 2, title[:dialog_w - 4], curses.color_pair(1) | curses.A_BOLD)
         except curses.error:
             pass
 
-        # Message
-        try:
-            self.stdscr.addstr(y + 3, x + 2, msg[:dialog_w - 4], attr)
-        except curses.error:
-            pass
+        # Message lines
+        msg_lines = [line for line in lines if line]
+        for i, line in enumerate(msg_lines[:3]):
+            try:
+                self.stdscr.addstr(y + 2 + i, x + 2, line[:dialog_w - 4], curses.color_pair(1))
+            except curses.error:
+                pass
 
-        # OK button
+        # Buttons
         try:
-            ok_text = self.msg.get("env_result_ok", "[O] OK")
-            self.stdscr.addstr(y + 6, x + 15, ok_text[:dialog_w - 30], attr)
+            if mode == "confirm":
+                self.stdscr.addstr(y + 6, x + 10, yes_text[:20], curses.color_pair(1) | curses.A_BOLD)
+                self.stdscr.addstr(y + 6, x + 30, no_text[:20], curses.color_pair(1))
+            else:
+                self.stdscr.addstr(y + 5, x + 15, ok_text[:dialog_w - 30], curses.color_pair(1))
         except curses.error:
             pass
 
         self.stdscr.refresh()
 
-        # Wait for user input (O or Enter)
         while True:
             try:
                 ch = self.stdscr.getch()
-                if ch in (ord('O'), ord('o'), ord('C'), ord('c'), curses.KEY_ENTER, ord('\n')):
-                    return  # Exit dialog
+                if mode == "confirm":
+                    if default_yes:
+                        if ch in (ord('Y'), ord('y'), 10, 13, curses.KEY_ENTER):
+                            return True
+                        if ch in (ord('N'), ord('n')):
+                            return False
+                    else:
+                        if ch in (ord('N'), ord('n'), 10, 13, curses.KEY_ENTER):
+                            return False
+                        if ch in (ord('Y'), ord('y')):
+                            return True
+                else:
+                    if ch in (ord('O'), ord('o'), 10, 13, curses.KEY_ENTER):
+                        return None
             except:
                 pass
+
+    def _show_exit_confirm(self) -> bool:
+        """Show exit confirmation dialog with Discard/Cancel options."""
+        title = self.msg.get("exit_title", "Exit MSL Setup")
+        msg1 = self.msg.get("exit_msg1", "Are you sure you want to exit")
+        msg2 = self.msg.get("exit_msg2", "without saving?")
+        discard_opt = self.msg.get("exit_discard", "[D] Discard")
+        cancel_opt = self.msg.get("exit_cancel", "[C] Cancel")
+        result = self._show_dialog(
+            "confirm",
+            title,
+            [msg1, msg2],
+            yes_text=discard_opt,
+            no_text=cancel_opt,
+            default_yes=False,
+        )
+        if result is False:
+            return False
+        self.status = self.msg["status_ready"]
+        return True
+
+    def _show_generate_confirm(self) -> bool:
+        """Show .env generation confirmation dialog."""
+        title = self.msg.get("generate_title", "Generate .env Configuration")
+        msg1 = self.msg.get("generate_msg1", "Ready to generate .env file")
+        msg2 = self.msg.get("generate_msg2", "with the current configuration.")
+        msg3 = self.msg.get("generate_msg3", "Continue?")
+        yes_opt = self.msg.get("generate_yes", "[Y] Yes")
+        no_opt = self.msg.get("generate_no", "[N] No")
+        result = self._show_dialog(
+            "confirm",
+            title,
+            [msg1, msg2, msg3],
+            yes_text=yes_opt,
+            no_text=no_opt,
+            default_yes=True,
+        )
+        if result is False:
+            self.status = self.msg["status_ready"]
+        return bool(result)
+
+    def _show_env_result(self, success: bool, error_msg: str = "") -> None:
+        """Show result dialog after .env save attempt (success or failure)."""
+        if success:
+            title = self.msg.get("env_success_title", "Configuration Saved")
+            msg = self.msg.get("env_success_msg", "Configuration successfully saved to .env")
+        else:
+            title = self.msg.get("env_fail_title", "Save Failed")
+            msg = error_msg if error_msg else self.msg.get("env_fail_msg", "Failed to save configuration to .env")
+        ok_text = self.msg.get("env_result_ok", "[O] OK")
+        self._show_dialog("notice", title, [msg], ok_text=ok_text)
+
+    def _show_notice_dialog(self, title: str, msg: str) -> None:
+        """Show a simple notice dialog with OK button."""
+        ok_text = self.msg.get("notice_ok", "[O] OK")
+        self._show_dialog("notice", title, [msg], ok_text=ok_text)
+
+    def _show_svg_dialog(self) -> bool:
+        """Show SVG generation dialog after .env save.
+
+        Returns True if user wants to generate SVG, False otherwise.
+        """
+        title = self.msg.get("svg_dialog_title", "Add Network Diagram to Proxmox Notes")
+        msg1 = self.msg.get("svg_dialog_msg", "Do you like to add Network Diagram")
+        msg2 = self.msg.get("svg_dialog_msg2", "to Proxmox Notes?")
+        yes_text = self.msg.get("svg_dialog_yes", "[Y] Yes")
+        no_text = self.msg.get("svg_dialog_no", "[N] No")
+        return bool(
+            self._show_dialog(
+                "confirm",
+                title,
+                [msg1, msg2],
+                yes_text=yes_text,
+                no_text=no_text,
+                default_yes=True,
+                refresh_screen=True,
+            )
+        )
 
     def _load_env_from_file(self) -> bool:
         """Load configuration from .env file.
@@ -906,61 +1049,23 @@ class TUIApp:
 
     def _show_load_env_dialog(self) -> bool:
         """Show dialog asking to load existing .env file.
-        
+
         Returns True if user wants to load, False if user wants to skip.
         """
-        h, w = self.stdscr.getmaxyx()
-        dialog_h = 10
-        dialog_w = 70
-        y = max(2, (h - dialog_h) // 2)
-        x = max(0, (w - dialog_w) // 2)
-
-        dialog_w = min(dialog_w, w - 2)
-
-        # Background
-        for row in range(y, min(y + dialog_h, h)):
-            try:
-                self.stdscr.addstr(row, x, " " * (dialog_w - 1), curses.color_pair(1) | curses.A_REVERSE)
-            except curses.error:
-                pass
-
-        # Title
-        try:
-            title = self.msg.get("load_env_title", "Load Existing Configuration")
-            self.stdscr.addstr(y, x + 2, title[:dialog_w - 4], curses.color_pair(1) | curses.A_BOLD)
-        except curses.error:
-            pass
-
-        # Message
-        try:
-            msg1 = self.msg.get("load_env_msg", "Found existing .env configuration file.")
-            msg2 = self.msg.get("load_env_msg2", "Load it?")
-            self.stdscr.addstr(y + 3, x + 2, msg1[:dialog_w - 4], curses.color_pair(1))
-            self.stdscr.addstr(y + 4, x + 2, msg2[:dialog_w - 4], curses.color_pair(1))
-        except curses.error:
-            pass
-
-        # Options
-        try:
-            yes_opt = self.msg.get("load_env_yes", "[Y] Yes")
-            no_opt = self.msg.get("load_env_no", "[N] No")
-            options_text = f"{yes_opt}  {no_opt}"
-            self.stdscr.addstr(y + 6, x + 10, options_text[:dialog_w - 20], curses.color_pair(1))
-        except curses.error:
-            pass
-
-        self.stdscr.refresh()
-
-        # Wait for user input
-        while True:
-            try:
-                ch = self.stdscr.getch()
-                if ch in (ord('Y'), ord('y')):
-                    return True   # Load .env
-                elif ch in (ord('N'), ord('n')):
-                    return False  # Skip loading
-            except:
-                pass
+        title = self.msg.get("load_env_title", "Load Existing Configuration")
+        msg1 = self.msg.get("load_env_msg", "Found existing .env configuration file.")
+        msg2 = self.msg.get("load_env_msg2", "Load it?")
+        yes_opt = self.msg.get("load_env_yes", "[Y] Yes")
+        no_opt = self.msg.get("load_env_no", "[N] No")
+        result = self._show_dialog(
+            "confirm",
+            title,
+            [msg1, msg2],
+            yes_text=yes_opt,
+            no_text=no_opt,
+            default_yes=True,
+        )
+        return bool(result)
 
     def _render_input_dialog(self) -> None:
         """Render an input dialog overlay when editing with original value and error messages."""
@@ -1599,6 +1704,19 @@ class TUIApp:
                     try:
                         self.runner.generate_env(self.config)
                         self._show_env_result(True)  # Show success dialog
+                        # Ask about SVG generation
+                        if self._show_svg_dialog():
+                            try:
+                                self.runner.generate_svg()
+                                self._show_notice_dialog(
+                                    self.msg.get("svg_success_title", "Network Diagram"),
+                                    self.msg.get("svg_success_msg", "Network diagram added to Proxmox notes."),
+                                )
+                            except Exception as svg_exc:
+                                self._show_notice_dialog(
+                                    self.msg.get("svg_fail_title", "Network Diagram"),
+                                    f"{self.msg.get('svg_fail_msg', 'Failed to add network diagram to Proxmox notes.')} ({svg_exc})",
+                                )
                         return False  # Exit successfully
                     except Exception as exc:
                         self._show_env_result(False, str(exc))  # Show failure dialog
@@ -1629,6 +1747,19 @@ class TUIApp:
                     try:
                         self.runner.generate_env(self.config)
                         self._show_env_result(True)  # Show success dialog
+                        # Ask about SVG generation
+                        if self._show_svg_dialog():
+                            try:
+                                self.runner.generate_svg()
+                                self._show_notice_dialog(
+                                    self.msg.get("svg_success_title", "Network Diagram"),
+                                    self.msg.get("svg_success_msg", "Network diagram added to Proxmox notes."),
+                                )
+                            except Exception as svg_exc:
+                                self._show_notice_dialog(
+                                    self.msg.get("svg_fail_title", "Network Diagram"),
+                                    f"{self.msg.get('svg_fail_msg', 'Failed to add network diagram to Proxmox notes.')} ({svg_exc})",
+                                )
                         return False  # Exit successfully
                     except Exception as exc:
                         self._show_env_result(False, str(exc))  # Show failure dialog
@@ -1656,6 +1787,19 @@ class TUIApp:
                 try:
                     self.runner.generate_env(self.config)
                     self._show_env_result(True)  # Show success dialog
+                    # Ask about SVG generation
+                    if self._show_svg_dialog():
+                        try:
+                            self.runner.generate_svg()
+                            self._show_notice_dialog(
+                                self.msg.get("svg_success_title", "Network Diagram"),
+                                self.msg.get("svg_success_msg", "Network diagram added to Proxmox notes."),
+                            )
+                        except Exception as svg_exc:
+                            self._show_notice_dialog(
+                                self.msg.get("svg_fail_title", "Network Diagram"),
+                                f"{self.msg.get('svg_fail_msg', 'Failed to add network diagram to Proxmox notes.')} ({svg_exc})",
+                            )
                     return False
                 except Exception as exc:
                     self._show_env_result(False, str(exc))  # Show failure dialog
