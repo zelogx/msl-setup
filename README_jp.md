@@ -15,6 +15,9 @@ Refer to README.md for English documents.
 > [English: README.md](./README.md) <BR>
 > Official Web Site is [here](https://www.zelogx.com)
 
+なお、以下のリポジトリは本セットアップスクリプトの手動構築手順です。
+[MSL Setup Basic JP](https://github.com/zelogx/proxmox-msl-setup-basic/blob/main/build-instructions_jp.md)
+
 ## 概要
 
 プロジェクトごとに完全に分離された L2 レベルの開発環境を構築し、VPN 経由で安全にアクセスできるようにします。

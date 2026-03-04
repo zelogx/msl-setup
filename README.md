@@ -21,6 +21,11 @@ Concretely, it configures Proxmox SDN (Simple Zones + VNets) and firewall rules 
 This project builds **completely isolated development environments per project** by Layer 2 level, accessible securely via VPN.\
 It's a blueprint for **low-cost distributed development**, offshore projects, or private team labs.
 
+Note:  
+The following repository contains the **manual setup procedure** corresponding to this setup script.
+
+[MSL Setup Basic](https://github.com/zelogx/proxmox-msl-setup-basic/blob/main/build-instructions.md)
+
 See below for architecture diagram.
 ![Zelogx MSL Setup Network Overview](docs/assets/zelogx-MSL-Setup.svg)
 
