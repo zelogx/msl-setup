@@ -121,6 +121,11 @@ readonly VMID_RECORD_FILE="${SCRIPT_DIR}/.last_created_vmid"
 # Validation Script
 readonly VALIDATE_SCRIPT="$SCRIPT_DIR/lib/pritunl_build_helper"
 
+# Fixed ICMP firewall rule comments (independent from .env)
+readonly ICMP_RULE_COMMENT1_FIXED="ICMP_RULE1_PRTN_VPNDMZ_GW"
+readonly ICMP_RULE_COMMENT2_FIXED="ICMP_RULE2_PRTN_DEVPJS"
+readonly ICMP_RULE_COMMENT3_FIXED="ICMP_RULE3_MAINLAN_ANY"
+
 # ============================================================================
 # Logging Setup
 # ============================================================================
@@ -427,9 +432,9 @@ echo ""
 # Step 10: Run remote validation
 log_info "Step 10: Running remote validation..."
 echo "$MSG_ICMP_ENABLE_START"
-enable_icmp_rule_by_comment "${ICMP_RULE_COMMENT1:-}" "vpndmz gateway"
-enable_icmp_rule_by_comment "${ICMP_RULE_COMMENT2:-}" "devpjs"
-enable_icmp_rule_by_comment "${ICMP_RULE_COMMENT3:-}" "mainlan any"
+enable_icmp_rule_by_comment "$ICMP_RULE_COMMENT1_FIXED" "vpndmz gateway"
+enable_icmp_rule_by_comment "$ICMP_RULE_COMMENT2_FIXED" "devpjs"
+enable_icmp_rule_by_comment "$ICMP_RULE_COMMENT3_FIXED" "mainlan any"
 echo ""
 if ! run_vm_validation "$PT_IG_IP"; then
     log_error "VM validation failed"
@@ -447,9 +452,9 @@ echo ""
 
 # Disable temporary ICMP allow rules after successful validation
 echo "$MSG_ICMP_DISABLE_START"
-disable_icmp_rule_by_comment "${ICMP_RULE_COMMENT1:-}" "vpndmz gateway"
-disable_icmp_rule_by_comment "${ICMP_RULE_COMMENT2:-}" "devpjs"
-disable_icmp_rule_by_comment "${ICMP_RULE_COMMENT3:-}" "mainlan any"
+disable_icmp_rule_by_comment "$ICMP_RULE_COMMENT1_FIXED" "vpndmz gateway"
+disable_icmp_rule_by_comment "$ICMP_RULE_COMMENT2_FIXED" "devpjs"
+disable_icmp_rule_by_comment "$ICMP_RULE_COMMENT3_FIXED" "mainlan any"
 echo ""
 
 # ============================================================================

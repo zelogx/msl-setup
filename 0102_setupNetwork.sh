@@ -360,10 +360,7 @@ pvesh create "/nodes/${node_name}/firewall/rules" \
     -comment "$icmp_rule3_comment" >/dev/null 2>&1 || log_warn "Failed to add icmp rule3"
 echo -n "."
 
-# Persist rule comments (used later for enable/disable lookups)
-update_env_var "ICMP_RULE_COMMENT1" "$icmp_rule1_comment"
-update_env_var "ICMP_RULE_COMMENT2" "$icmp_rule2_comment"
-update_env_var "ICMP_RULE_COMMENT3" "$icmp_rule3_comment"
+# Keep ICMP rule comments as fixed identifiers in scripts (not persisted to .env)
 echo " [OK]"
 log_info "  Host-level FORWARD/IN rules completed."
 

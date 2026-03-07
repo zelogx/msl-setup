@@ -71,8 +71,8 @@ MESSAGES = {
         "status_ready": "Tab: Next  Shift+Tab: Prev  Enter: Edit/Save  Esc: Exit  PgUp/PgDn: Scroll",
         "status_calc": "Calculating network configuration...",
         "status_error": "Error: ",
-        "status_env_ok": ".env generated successfully",
-        "status_env_fail": "Failed to generate .env",
+        "status_env_ok": "Configuration file generated successfully",
+        "status_env_fail": "Failed to generate configuration file",
         "status_resize": "Terminal too small. Resize to at least 80x24.",
         "preview_empty": "(no preview yet)",
         "preview_title": "Configuration Preview (Auto-calculated)",
@@ -108,22 +108,22 @@ MESSAGES = {
         "exit_msg2": "without saving?",
         "exit_discard": "[D] Discard",
         "exit_cancel": "[C] Cancel",
-        # .env generation confirmation dialog
-        "generate_title": "Generate .env Configuration",
-        "generate_msg1": "Ready to generate .env file",
+        # Configuration file generation confirmation dialog
+        "generate_title": "Generate Configuration File",
+        "generate_msg1": "Ready to generate configuration file",
         "generate_msg2": "with the current configuration.",
         "generate_msg3": "Continue?",
         "generate_yes": "[Y] Yes",
         "generate_no": "[N] No",
-        # .env save result dialogs
+        # Configuration file save result dialogs
         "env_success_title": "Configuration Saved",
-        "env_success_msg": "Configuration successfully saved to .env",
+        "env_success_msg": "Configuration file saved successfully",
         "env_fail_title": "Save Failed",
-        "env_fail_msg": "Failed to save configuration to .env",
+        "env_fail_msg": "Failed to save configuration file",
         "env_result_ok": "[O] OK",
-        # .env load dialog
-        "load_env_title": "Load Existing Configuration",
-        "load_env_msg": "Found existing .env configuration file.",
+        # Existing configuration file load dialog
+        "load_env_title": "Existing Configuration File",
+        "load_env_msg": "Found an existing configuration file.",
         "load_env_msg2": "Load it?",
         "load_env_yes": "[Y] Yes",
         "load_env_no": "[N] No",
@@ -152,8 +152,8 @@ MESSAGES = {
         "status_ready": "Tab: 次へ  Shift+Tab: 前へ  Enter: 編集/保存  Esc: 終了  PgUp/PgDn: スクロール",
         "status_calc": "ネットワーク設定を計算中...",
         "status_error": "エラー: ",
-        "status_env_ok": ".env の生成に成功しました",
-        "status_env_fail": ".env の生成に失敗しました",
+        "status_env_ok": "設定ファイルの生成に成功しました",
+        "status_env_fail": "設定ファイルの生成に失敗しました",
         "status_resize": "端末サイズが小さすぎます。80x24以上にしてください。",
         "preview_empty": "(no preview yet)",
         "preview_title": "設定プレビュー（自動計算）",
@@ -189,22 +189,22 @@ MESSAGES = {
         "exit_msg2": "",
         "exit_discard": "[D] 破棄",
         "exit_cancel": "[C] キャンセル",
-        # .env generation confirmation dialog
-        "generate_title": ".env 設定ファイルを生成",
-        "generate_msg1": ".env ファイルを生成する準備が",
+        # 設定ファイル生成確認ダイアログ
+        "generate_title": "設定ファイルを生成",
+        "generate_msg1": "設定ファイルを生成する準備が",
         "generate_msg2": "できました。続行しますか？",
         "generate_msg3": "",
         "generate_yes": "[Y] はい",
         "generate_no": "[N] いいえ",
-        # .env save result dialogs
+        # 設定ファイル保存結果ダイアログ
         "env_success_title": "設定ファイル保存成功",
-        "env_success_msg": "設定ファイルを .env に保存しました",
+        "env_success_msg": "設定ファイルを保存しました",
         "env_fail_title": "保存失敗",
-        "env_fail_msg": ".env への設定ファイル保存に失敗しました",
+        "env_fail_msg": "設定ファイルの保存に失敗しました",
         "env_result_ok": "[O] OK",
-        # .env load dialog
+        # 既存設定ファイル読み込みダイアログ
         "load_env_title": "既存設定ファイル",
-        "load_env_msg": "既存の .env ファイルが見つかりました。",
+        "load_env_msg": "既存の設定ファイルが見つかりました。",
         "load_env_msg2": "読み込みますか？",
         "load_env_yes": "[Y] はい",
         "load_env_no": "[N] いいえ",
@@ -855,70 +855,108 @@ class TUIApp:
         dialog_w = min(dialog_w, w - 2)
         dialog_h = min(dialog_h, h - 2)
 
-        # Background
-        for row in range(y, min(y + dialog_h, h)):
+        # Extract keys from button texts (e.g., "[D]" -> "D", "[Y]" -> "Y")
+        yes_key = "Y"
+        no_key = "N"
+        ok_key = "O"
+        
+        if yes_text:
+            match = re.search(r'\[([A-Za-z])\]', yes_text)
+            if match:
+                yes_key = match.group(1).upper()
+        if no_text:
+            match = re.search(r'\[([A-Za-z])\]', no_text)
+            if match:
+                no_key = match.group(1).upper()
+        if ok_text:
+            match = re.search(r'\[([A-Za-z])\]', ok_text)
+            if match:
+                ok_key = match.group(1).upper()
+
+        # Focus state: 0=yes/left/ok, 1=no/right
+        focused = 0 if default_yes else 1
+
+        def draw_dialog():
+            """Draw the dialog with current focus state."""
+            # Background
+            for row in range(y, min(y + dialog_h, h)):
+                try:
+                    self.stdscr.addstr(row, x, " " * (dialog_w - 1), curses.color_pair(1) | curses.A_REVERSE)
+                except curses.error:
+                    pass
+
+            # Border
             try:
-                self.stdscr.addstr(row, x, " " * (dialog_w - 1), curses.color_pair(1) | curses.A_REVERSE)
+                for col in range(x, x + dialog_w - 1):
+                    self.stdscr.addch(y, col, curses.ACS_HLINE, curses.color_pair(1))
+                    self.stdscr.addch(y + dialog_h - 1, col, curses.ACS_HLINE, curses.color_pair(1))
+                for row in range(y, y + dialog_h - 1):
+                    self.stdscr.addch(row, x, curses.ACS_VLINE, curses.color_pair(1))
+                    self.stdscr.addch(row, x + dialog_w - 2, curses.ACS_VLINE, curses.color_pair(1))
+                self.stdscr.addch(y, x, curses.ACS_ULCORNER, curses.color_pair(1))
+                self.stdscr.addch(y, x + dialog_w - 2, curses.ACS_URCORNER, curses.color_pair(1))
+                self.stdscr.addch(y + dialog_h - 1, x, curses.ACS_LLCORNER, curses.color_pair(1))
+                self.stdscr.addch(y + dialog_h - 1, x + dialog_w - 2, curses.ACS_LRCORNER, curses.color_pair(1))
             except curses.error:
                 pass
 
-        # Border
-        try:
-            for col in range(x, x + dialog_w - 1):
-                self.stdscr.addch(y, col, curses.ACS_HLINE, curses.color_pair(1))
-                self.stdscr.addch(y + dialog_h - 1, col, curses.ACS_HLINE, curses.color_pair(1))
-            for row in range(y, y + dialog_h - 1):
-                self.stdscr.addch(row, x, curses.ACS_VLINE, curses.color_pair(1))
-                self.stdscr.addch(row, x + dialog_w - 2, curses.ACS_VLINE, curses.color_pair(1))
-            self.stdscr.addch(y, x, curses.ACS_ULCORNER, curses.color_pair(1))
-            self.stdscr.addch(y, x + dialog_w - 2, curses.ACS_URCORNER, curses.color_pair(1))
-            self.stdscr.addch(y + dialog_h - 1, x, curses.ACS_LLCORNER, curses.color_pair(1))
-            self.stdscr.addch(y + dialog_h - 1, x + dialog_w - 2, curses.ACS_LRCORNER, curses.color_pair(1))
-        except curses.error:
-            pass
-
-        # Title
-        try:
-            self.stdscr.addstr(y, x + 2, title[:dialog_w - 4], curses.color_pair(1) | curses.A_BOLD)
-        except curses.error:
-            pass
-
-        # Message lines
-        msg_lines = [line for line in lines if line]
-        for i, line in enumerate(msg_lines[:3]):
+            # Title
             try:
-                self.stdscr.addstr(y + 2 + i, x + 2, line[:dialog_w - 4], curses.color_pair(1))
+                self.stdscr.addstr(y, x + 2, title[:dialog_w - 4], curses.color_pair(1) | curses.A_BOLD)
             except curses.error:
                 pass
 
-        # Buttons
-        try:
-            if mode == "confirm":
-                self.stdscr.addstr(y + 6, x + 10, yes_text[:20], curses.color_pair(1) | curses.A_BOLD)
-                self.stdscr.addstr(y + 6, x + 30, no_text[:20], curses.color_pair(1))
-            else:
-                self.stdscr.addstr(y + 5, x + 15, ok_text[:dialog_w - 30], curses.color_pair(1))
-        except curses.error:
-            pass
+            # Message lines
+            msg_lines = [line for line in lines if line]
+            for i, line in enumerate(msg_lines[:3]):
+                try:
+                    self.stdscr.addstr(y + 2 + i, x + 2, line[:dialog_w - 4], curses.color_pair(1))
+                except curses.error:
+                    pass
 
-        self.stdscr.refresh()
+            # Buttons with focus highlighting
+            try:
+                if mode == "confirm":
+                    # Left button (Yes/Discard)
+                    left_attr = curses.color_pair(1) | curses.A_BOLD | curses.A_REVERSE if focused == 0 else curses.color_pair(1) | curses.A_BOLD
+                    self.stdscr.addstr(y + 6, x + 10, yes_text[:20], left_attr)
+                    # Right button (No/Cancel)
+                    right_attr = curses.color_pair(1) | curses.A_BOLD | curses.A_REVERSE if focused == 1 else curses.color_pair(1)
+                    self.stdscr.addstr(y + 6, x + 30, no_text[:20], right_attr)
+                else:
+                    # OK button (always focused in notice mode)
+                    self.stdscr.addstr(y + 5, x + 15, ok_text[:dialog_w - 30], curses.color_pair(1) | curses.A_BOLD)
+            except curses.error:
+                pass
+
+            self.stdscr.refresh()
+
+        # Initial draw
+        draw_dialog()
 
         while True:
             try:
                 ch = self.stdscr.getch()
+                
                 if mode == "confirm":
-                    if default_yes:
-                        if ch in (ord('Y'), ord('y'), 10, 13, curses.KEY_ENTER):
-                            return True
-                        if ch in (ord('N'), ord('n')):
-                            return False
-                    else:
-                        if ch in (ord('N'), ord('n'), 10, 13, curses.KEY_ENTER):
-                            return False
-                        if ch in (ord('Y'), ord('y')):
-                            return True
+                    # Tab or arrow keys to toggle focus between buttons
+                    if ch in (9, curses.KEY_RIGHT, curses.KEY_BTAB, curses.KEY_LEFT):
+                        focused = 1 - focused  # Toggle: 0↔1
+                        draw_dialog()
+                        continue
+                    
+                    # Enter key: execute focused option
+                    if ch in (10, 13, curses.KEY_ENTER):
+                        return focused == 0
+                    
+                    # Direct key shortcuts
+                    if ch in (ord(yes_key), ord(yes_key.lower())):
+                        return True
+                    if ch in (ord(no_key), ord(no_key.lower())):
+                        return False
                 else:
-                    if ch in (ord('O'), ord('o'), 10, 13, curses.KEY_ENTER):
+                    # Notice mode: OK button
+                    if ch in (ord(ok_key), ord(ok_key.lower()), 10, 13, curses.KEY_ENTER):
                         return None
             except:
                 pass
@@ -938,15 +976,15 @@ class TUIApp:
             no_text=cancel_opt,
             default_yes=False,
         )
-        if result is False:
-            return False
+        if result is True:
+            return False  # Discard selected: return False to exit loop
         self.status = self.msg["status_ready"]
-        return True
+        return True  # Cancel selected: return True to continue
 
     def _show_generate_confirm(self) -> bool:
         """Show .env generation confirmation dialog."""
-        title = self.msg.get("generate_title", "Generate .env Configuration")
-        msg1 = self.msg.get("generate_msg1", "Ready to generate .env file")
+        title = self.msg.get("generate_title", "Generate Configuration File")
+        msg1 = self.msg.get("generate_msg1", "Ready to generate configuration file")
         msg2 = self.msg.get("generate_msg2", "with the current configuration.")
         msg3 = self.msg.get("generate_msg3", "Continue?")
         yes_opt = self.msg.get("generate_yes", "[Y] Yes")
@@ -967,10 +1005,10 @@ class TUIApp:
         """Show result dialog after .env save attempt (success or failure)."""
         if success:
             title = self.msg.get("env_success_title", "Configuration Saved")
-            msg = self.msg.get("env_success_msg", "Configuration successfully saved to .env")
+            msg = self.msg.get("env_success_msg", "Configuration file saved successfully")
         else:
             title = self.msg.get("env_fail_title", "Save Failed")
-            msg = error_msg if error_msg else self.msg.get("env_fail_msg", "Failed to save configuration to .env")
+            msg = error_msg if error_msg else self.msg.get("env_fail_msg", "Failed to save configuration file")
         ok_text = self.msg.get("env_result_ok", "[O] OK")
         self._show_dialog("notice", title, [msg], ok_text=ok_text)
 
@@ -1056,8 +1094,8 @@ class TUIApp:
 
         Returns True if user wants to load, False if user wants to skip.
         """
-        title = self.msg.get("load_env_title", "Load Existing Configuration")
-        msg1 = self.msg.get("load_env_msg", "Found existing .env configuration file.")
+        title = self.msg.get("load_env_title", "Existing Configuration File")
+        msg1 = self.msg.get("load_env_msg", "Found an existing configuration file.")
         msg2 = self.msg.get("load_env_msg2", "Load it?")
         yes_opt = self.msg.get("load_env_yes", "[Y] Yes")
         no_opt = self.msg.get("load_env_no", "[N] No")
@@ -2109,7 +2147,7 @@ class TUIApp:
                     self.status = self.msg["status_ready"]
                 else:
                     # Failed to load
-                    self.status = f"{self.msg['status_error']}Failed to load .env"
+                    self.status = f"{self.msg['status_error']}Failed to load configuration file"
             else:
                 # User skipped loading
                 self.status = self.msg["status_ready"]
