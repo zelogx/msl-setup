@@ -219,15 +219,13 @@ On a single Proxmox VE node:
 > Enterprise-grade solutions with similar capabilities are typically positioned at a significantly higher cost range.\
 > This achieves the same goal for (almost) zero cost.
 
-### 1.3. Reference: Commercial Alternatives
+### 1.3. Reference: Alternatives for personal / small office Proxmox multi-tenant setups
 
-| Vendors / Product                  | Strength                                          | Weakness / Gaps You Can Fill                                            |
-| ---------------------------------- | ------------------------------------------------- | ----------------------------------------------------------------------- |
-| Palo Alto Networks “Prisma Access” | Enterprise-grade SASE / ZTNA coverage             | Overkill for small on-prem or hybrid labs                               |
-| Zscaler “Zero Trust Exchange”      | Global edge presence, strong remote-user security | Needs customization for on-prem virtualized networks                    |
-| Check Point + Perimeter81          | Integrated Zero-Trust WAN                         | Complex setup, high cost for small deployments                          |
-| StrongDM                           | Access management (SSH / RDP / DB)                | Does not handle virtual-network segmentation or VPN-based multi-tenancy |
-| JumpCloud                          | Wide SaaS IAM coverage                            | Limited to identity layer, not virtual network control                  |
+| Method                 | Learning Curve | Network Isolation | Automation      | Individual-Friendly |
+| ---------------------- | -------------- | ----------------- | --------------- | ------------------- |
+| RBAC + Resource Pools  | **Medium**     | None              | GUI only        | 　                  |
+| SDN + OPNsense         | **Very High**  | Strong            | Manual setup    | Partial             |
+| **MSL Setup Personal** | **Low**        | Strong            | Fully automated | Excellent           |
 
 
 ### 1.4. Licensing
