@@ -68,116 +68,6 @@ cd msl-setup
 #   2. Restore network configuration to backup state (calls 0102_setupNetwork.sh --restore)
 ```
 
-### Motivation
-
-#### The Problem: The "Flat Network" Trap in Proxmox
-
-When I needed to share my Proxmox development environment with team members over VPN, I ran into a familiar set of problems:
-
-- **Visibility vs. Privacy**: A typical VPN setup tends to expose too much. I wanted each team member to see their own project VMs, but not my personal lab, other clients' environments, or the host infrastructure.
-- **Management Overhead**: Manually issuing, revoking, and organizing VPN profiles for multiple users across multiple projects does not scale. It’s tedious and error-prone.
-- **The Isolation Gap**: Proxmox is powerful, but achieving true L2 isolation between “tenants” while still keeping VPN access simple usually means hand-rolling SDN + firewall rules. Repeating that setup reliably is hard.
-
-#### The Solution: Building the "Multiverse"
-
-I went looking for a tool that could:
-
-- Spin up a secure, isolated "bubble" (a tenant) per project
-- Attach a dedicated VPN gateway to that bubble
-- Handle the boilerplate around VPN profile management
-
-I couldn’t find it.
-
-So I built **Zelogx MSL Setup**.
-
-Zelogx turns a single Proxmox VE host into a multi-tenant lab provider. It’s aimed at engineers who need to give secure, isolated access to specific resources without exposing the rest of their infrastructure.
-
----
-
-### Architecture
-
-(Refer to the high-resolution network diagram in this repository for full details.)
-
-```plaintext
-+----------------+       +------------------+
-|  VPN Client    | ----> |  Cloudflare /    |
-| (Team Member)  |       |  Internet        |
-+----------------+       +------------------+
-        |                        |
-        | VPN Tunnel (UDP/TCP)   | Port Forwarding
-        v                        v
-+=========================================================================+
-|  Proxmox VE Host (Physical Server)                                      |
-|                                                                         |
-|    +----------------------------------------+                           |
-|    | Pritunl VM (VPN Gateway)               |                           |
-|    |  [OpenVPN Servers]  [WireGuard Servers]|                           |
-|    |         |                  |           |                           |
-|    +---------+------------------+-----------+                           |
-|              | VPN Traffic (Decrypted)                                  |
-|              v                                                          |
-|    +----------------------------------------+                           |
-|    |  SDN Zone: vpndmz (192.168.80.0/24)    |                           |
-|    +----------------------------------------+                           |
-|              |                                                          |
-|              | (Routing & Firewalling)                                  |
-|    +=========v==============================+                           |
-|    | Nftables / Proxmox SDN Engine          |  <-- "Multiverse"         |
-|    | (L2/L3 Isolation Enforcement)          |      Enforcer             |
-|    +=========+====================+=========+                           |
-|              |                    |                                     |
-|    +---------v-------+    +-------v-------+         +-------v-------+   |
-|    | Zone: devpj01   |    | Zone: devpj02 |         | Zone: devpjNN |   |
-|    | [Isolated Lab]  |    | [Isolated Lab]|   ...   | [Isolated Lab]|   |
-|    | 172.16.16.0/24  |    | 172.16.17.0/24|         | 172.16.xx.0/24|   |
-|    +-----------------+    +---------------+         +---------------+   |
-|       | VM1 | VM2 |          | VM1 | VM2 |             | VMs... |       |
-|       +-----+-----+          +-----+-----+             +--------+       |
-|            (🔒)                   (🔒)                      (🔒)         |
-+=========================================================================+
-LEGEND: ---> Traffic Flow, [🔒] Isolated Project Environment
-```
-
----
-
-### Engineering Principles
-
-#### 1. Pre-configuration over Runtime Overhead
-
-Zelogx MSL Setup is designed as a **pre-configuration tool**.
-
-- **No long-running daemons**: All SDN objects, isolation rules, and VPN gateways are provisioned up front.
-- **Static security posture**: Once the setup is complete, the environment is “baked into” Proxmox. There is no separate “Zelogx service” that can crash, drift, or introduce its own attack surface at runtime.
-
-#### 2. 100% Native Proxmox Building Blocks
-
-We try to stick to the “power of boring technology”.
-
-- **Standard features only**: The tool uses native Proxmox VE components — `pvesh`, Proxmox SDN (Simple/VLAN zones), and the built-in nftables integration.
-- **Update-friendly**: There are no custom kernel modules or out-of-tree drivers. You keep getting regular Proxmox updates without carrying extra technical debt.
-
-#### 3. Pritunl Automation (VPN Provisioning)
-
-The VPN side is fully automated using the official Pritunl HTTP API.
-
-During the VPN setup phase, MSL Setup:
-
-1. Boots the Pritunl VM via cloud-init.
-2. Waits for the Pritunl service to become ready.
-3. Uses the Pritunl API (key/secret configured inside the VM) to:
-   - Create one or more **Organizations**
-   - Create the required **Servers** (OpenVPN / WireGuard)
-   - **Attach Organizations to Servers**
-   - **Start** the configured Servers
-
-No web UI automation is involved — everything is provisioned through the documented REST API.
-
-From the Proxmox host’s perspective, the Pritunl VM is treated as a black box VPN gateway:
-- Proxmox SDN and nftables handle routing and isolation.
-- Pritunl’s own API is used only inside that VM to define tunnel endpoints and access control.
-
----
-
 ### Security & Design Choices (FAQ)
 
 **Q: Can VM hopping be prevented?**
@@ -476,3 +366,116 @@ This architecture proves that small software teams, SaaS startups, and serious h
 
 Security, performance, and independence don’t have to be trade-offs.
 They can coexist — by design.
+
+---
+
+
+### Motivation
+
+#### The Problem: The "Flat Network" Trap in Proxmox
+
+When I needed to share my Proxmox development environment with team members over VPN, I ran into a familiar set of problems:
+
+- **Visibility vs. Privacy**: A typical VPN setup tends to expose too much. I wanted each team member to see their own project VMs, but not my personal lab, other clients' environments, or the host infrastructure.
+- **Management Overhead**: Manually issuing, revoking, and organizing VPN profiles for multiple users across multiple projects does not scale. It’s tedious and error-prone.
+- **The Isolation Gap**: Proxmox is powerful, but achieving true L2 isolation between “tenants” while still keeping VPN access simple usually means hand-rolling SDN + firewall rules. Repeating that setup reliably is hard.
+
+#### The Solution: Building the "Multiverse"
+
+I went looking for a tool that could:
+
+- Spin up a secure, isolated "bubble" (a tenant) per project
+- Attach a dedicated VPN gateway to that bubble
+- Handle the boilerplate around VPN profile management
+
+I couldn’t find it.
+
+So I built **Zelogx MSL Setup**.
+
+Zelogx turns a single Proxmox VE host into a multi-tenant lab provider. It’s aimed at engineers who need to give secure, isolated access to specific resources without exposing the rest of their infrastructure.
+
+---
+
+### Architecture
+
+(Refer to the high-resolution network diagram in this repository for full details.)
+
+```plaintext
++----------------+       +------------------+
+|  VPN Client    | ----> |  Cloudflare /    |
+| (Team Member)  |       |  Internet        |
++----------------+       +------------------+
+        |                        |
+        | VPN Tunnel (UDP/TCP)   | Port Forwarding
+        v                        v
++=========================================================================+
+|  Proxmox VE Host (Physical Server)                                      |
+|                                                                         |
+|    +----------------------------------------+                           |
+|    | Pritunl VM (VPN Gateway)               |                           |
+|    |  [OpenVPN Servers]  [WireGuard Servers]|                           |
+|    |         |                  |           |                           |
+|    +---------+------------------+-----------+                           |
+|              | VPN Traffic (Decrypted)                                  |
+|              v                                                          |
+|    +----------------------------------------+                           |
+|    |  SDN Zone: vpndmz (192.168.80.0/24)    |                           |
+|    +----------------------------------------+                           |
+|              |                                                          |
+|              | (Routing & Firewalling)                                  |
+|    +=========v==============================+                           |
+|    | Nftables / Proxmox SDN Engine          |  <-- "Multiverse"         |
+|    | (L2/L3 Isolation Enforcement)          |      Enforcer             |
+|    +=========+====================+=========+                           |
+|              |                    |                                     |
+|    +---------v-------+    +-------v-------+         +-------v-------+   |
+|    | Zone: devpj01   |    | Zone: devpj02 |         | Zone: devpjNN |   |
+|    | [Isolated Lab]  |    | [Isolated Lab]|   ...   | [Isolated Lab]|   |
+|    | 172.16.16.0/24  |    | 172.16.17.0/24|         | 172.16.xx.0/24|   |
+|    +-----------------+    +---------------+         +---------------+   |
+|       | VM1 | VM2 |          | VM1 | VM2 |             | VMs... |       |
+|       +-----+-----+          +-----+-----+             +--------+       |
+|            (🔒)                   (🔒)                      (🔒)         |
++=========================================================================+
+LEGEND: ---> Traffic Flow, [🔒] Isolated Project Environment
+```
+
+---
+
+### Engineering Principles
+
+#### 1. Pre-configuration over Runtime Overhead
+
+Zelogx MSL Setup is designed as a **pre-configuration tool**.
+
+- **No long-running daemons**: All SDN objects, isolation rules, and VPN gateways are provisioned up front.
+- **Static security posture**: Once the setup is complete, the environment is “baked into” Proxmox. There is no separate “Zelogx service” that can crash, drift, or introduce its own attack surface at runtime.
+
+#### 2. 100% Native Proxmox Building Blocks
+
+We try to stick to the “power of boring technology”.
+
+- **Standard features only**: The tool uses native Proxmox VE components — `pvesh`, Proxmox SDN (Simple/VLAN zones), and the built-in nftables integration.
+- **Update-friendly**: There are no custom kernel modules or out-of-tree drivers. You keep getting regular Proxmox updates without carrying extra technical debt.
+
+#### 3. Pritunl Automation (VPN Provisioning)
+
+The VPN side is fully automated using the official Pritunl HTTP API.
+
+During the VPN setup phase, MSL Setup:
+
+1. Boots the Pritunl VM via cloud-init.
+2. Waits for the Pritunl service to become ready.
+3. Uses the Pritunl API (key/secret configured inside the VM) to:
+   - Create one or more **Organizations**
+   - Create the required **Servers** (OpenVPN / WireGuard)
+   - **Attach Organizations to Servers**
+   - **Start** the configured Servers
+
+No web UI automation is involved — everything is provisioned through the documented REST API.
+
+From the Proxmox host’s perspective, the Pritunl VM is treated as a black box VPN gateway:
+- Proxmox SDN and nftables handle routing and isolation.
+- Pritunl’s own API is used only inside that VM to define tunnel endpoints and access control.
+
+---
