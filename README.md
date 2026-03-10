@@ -219,13 +219,14 @@ On a single Proxmox VE node:
 > Enterprise-grade solutions with similar capabilities are typically positioned at a significantly higher cost range.\
 > This achieves the same goal for (almost) zero cost.
 
-### 1.3. Reference: Alternatives for personal / small office Proxmox multi-tenant setups
+### 1.3. Comparison: Alternatives for personal / small office Proxmox multi-tenant setups
 
 | Method                 | Learning Curve | Network Isolation | Automation      | Individual-Friendly |
 | ---------------------- | -------------- | ----------------- | --------------- | ------------------- |
-| RBAC + Resource Pools  | **Medium**     | None              | GUI only        | 　                  |
+| RBAC + Resource Pools  | **Medium**     | None              | GUI only        | Limited             |
 | SDN + OPNsense         | **Very High**  | Strong            | Manual setup    | Partial             |
-| **MSL Setup Personal** | **Low**        | Strong            | Fully automated | Excellent           |
+| **MSL Setup Basic**    | **Low**        | Strong            | Manual (Guided) setup | Excellent          |
+| **MSL Setup Personal** | **Extremely Low** | Strong            | Fully automated | Excellent           |
 
 
 ### 1.4. Licensing
