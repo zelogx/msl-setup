@@ -111,12 +111,18 @@ On a single Proxmox VE node:
 
 ### 1.3. Comparison: Alternatives for personal / small office Proxmox multi-tenant setups
 
+Several approaches exist for building multi-tenant environments on Proxmox.
+The following table summarizes the practical differences.
+
 | Method                 | Learning Curve | Network Isolation | Automation      | Individual-Friendly |
 | ---------------------- | -------------- | ----------------- | --------------- | ------------------- |
 | RBAC + Resource Pools  | **Medium**     | None              | GUI only        | Limited             |
 | SDN + OPNsense         | **Very High**  | Strong            | Manual setup    | Partial             |
 | **MSL Setup Basic**    | **Low**        | Strong            | Manual (Guided) setup | Excellent          |
 | **MSL Setup Personal** | **Extremely Low** | Strong            | Fully automated | Excellent           |
+
+For a deeper explanation of each approach, see the  
+[Proxmox Multi-tenant Guide](https://github.com/zelogx/msl-setup/wiki/Proxmox-Multi%E2%80%90tenant-Guide).
 
 
 ### 1.4. Licensing
