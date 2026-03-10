@@ -121,8 +121,7 @@ The following table summarizes the practical differences.
 | **MSL Setup Basic**    | **Low**        | Strong            | Manual (Guided) setup | Excellent          |
 | **MSL Setup Personal** | **Extremely Low** | Strong            | Fully automated | Excellent           |
 
-For a deeper explanation of each approach, see the  
-[Proxmox Multi-tenant Guide](https://github.com/zelogx/msl-setup/wiki/Proxmox-Multi%E2%80%90tenant-Guide).
+For a deeper explanation of each approach, see the [Proxmox Multi-tenant Guide](https://github.com/zelogx/msl-setup/wiki/Proxmox-Multi%E2%80%90tenant-Guide).
 
 
 ### 1.4. Licensing

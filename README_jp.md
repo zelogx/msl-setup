@@ -234,8 +234,7 @@ Proxmox でマルチテナント環境を構築する方法はいくつか存在
 | **MSL Setup Basic**    | **低い**    | 強い       | 手動(手順書完備) | 非常に高い  |
 | **MSL Setup Personal** | **極めて低い** | 強い       | 完全自動化       | 非常に高い  |
 
-各アプローチのより詳しい説明については、  
-[Proxmox マルチテナントガイド](https://github.com/zelogx/msl-setup/wiki/Proxmox-%E3%83%9E%E3%83%AB%E3%83%81%E3%83%86%E3%83%8A%E3%83%B3%E3%83%88%E3%82%AC%E3%82%A4%E3%83%89) を参照してください。
+各アプローチのより詳しい説明については、[Proxmox マルチテナントガイド](https://github.com/zelogx/msl-setup/wiki/Proxmox-%E3%83%9E%E3%83%AB%E3%83%81%E3%83%86%E3%83%8A%E3%83%B3%E3%83%88%E3%82%AC%E3%82%A4%E3%83%89) を参照してください。
 
 ### 1.3. 利用ソフトウェアのライセンス
 
