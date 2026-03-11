@@ -450,3 +450,74 @@ PVEには固定IPを振ってください。
 
 なお、この記事は家庭LABおじさんも出来るレベルで記載してますが、中小ソフトハウス、少人数SaaS開発、SIer、SES会社向けです。
 
+## トラブルシューティング: UDP port forwarding validation failed
+
+`02_vpnSetup.sh` の実行中に、以下のようなエラーで停止する場合があります。
+
+'''bash
+ERROR: UDP port forwarding validation failed
+'''
+
+これは、**VPN サーバ用に指定した UDP ポートへ外部から正しく到達できない** 場合に表示されます。  
+多くの場合、MSL Setup 自体の不具合ではなく、**ルータ設定・回線仕様・ネットワーク経路** の問題です。
+
+### 確認項目
+
+1. **ルータのポートフォワード設定を確認する**
+   - 正しいポート番号と転送先 IP は、`01_networkSetup.sh` 実行完了時のコンソールログに表示されます
+   - 設定した UDP ポートが、Pritunl VM の mainlan 側 IP に向いていることを確認してください
+
+2. **01_networkSetup.sh のログが残っていない場合**
+   - 一度アンインストールしてから再実行すると、必要な設定値を再確認できます
+
+```bash
+./99_uninstall.sh jp
+./01_networkSetup.sh jp
+```
+
+3. **ポート番号を変更して最初からやり直したい場合**
+   - `00_configNetwork.sh` から再実行してください
+
+```bash
+./99_uninstall.sh jp
+./00_configNetwork.sh jp
+```
+
+4. **ポートフォワード設定は正しいはずなのに失敗する場合**
+   - ルータが別セグメント先 IP へのポートフォワードに対応していない可能性があります
+   - Proxmox がルータ直下にいない場合、途中経路で転送できない構成もあります
+   - IPoE / MAP-E / DS-Lite / ND Proxy などの環境では、使用できるポートに制限がある場合があります
+
+5. **修正後の再実行**
+   - 修正後に再度以下を実行してください
+
+```bash
+./02_vpnSetup.sh jp
+```
+
+### VPN サーバが不要な場合
+
+Pritunl VM を削除するには、以下を実行してください。
+
+```bash
+./0201_createPritunlVM.sh jp --destroy
+```
+
+### ルータ設定は後で行うため、このチェックを一時的にスキップしたい場合
+
+以下のファイルを配置してから、再度 `02_vpnSetup.sh` を実行してください。
+
+```bash
+touch /root/demo
+./02_vpnSetup.sh jp
+```
+
+### 補足
+
+このチェックで失敗した場合でも、**VM 自体はデプロイ済みで起動したまま** になっていることがあります。  
+必要に応じて、以下のような確認が可能です。
+
+```bash
+ssh root@<Pritunl-VM-IP>
+ping <GW IP Adress>
+```

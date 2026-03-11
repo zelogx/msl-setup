@@ -409,3 +409,75 @@ From the Proxmox host’s perspective, the Pritunl VM is treated as a black box 
 - Pritunl’s own API is used only inside that VM to define tunnel endpoints and access control.
 
 ---
+
+## Troubleshooting: UDP port forwarding validation failed
+
+During `02_vpnSetup.sh`, you may encounter an error such as:
+
+```bash
+ERROR: UDP port forwarding validation failed
+```
+
+This means that the specified UDP ports for the VPN server could not be reached from outside.  
+In most cases, this is **not** an MSL Setup bug. It is usually caused by **router settings, ISP/network restrictions, or network path issues**.
+
+### Checklist
+
+1. **Verify the router port forwarding settings**
+   - The expected UDP ports and destination IP are shown at the end of `01_networkSetup.sh`
+   - Make sure the configured UDP ports are forwarded to the mainlan-side IP of the Pritunl VM
+
+2. **If the `01_networkSetup.sh` console log is no longer available**
+   - Re-run it after uninstalling to confirm the required values again
+
+```bash
+./99_uninstall.sh
+./01_networkSetup.sh
+```
+
+3. **If you want to change the port numbers and restart from scratch**
+   - Re-run from `00_configNetwork.sh`
+
+```bash
+./99_uninstall.sh
+./00_configNetwork.sh
+```
+
+4. **If the port forwarding settings look correct but it still fails**
+   - Your router may not support forwarding to an IP in another network segment
+   - If Proxmox is not directly connected under the router, forwarding may fail depending on the topology
+   - Some Internet environments such as IPoE / MAP-E / DS-Lite / ND Proxy may restrict available ports
+
+5. **Re-run after fixing the issue**
+   - After making corrections, run:
+
+```bash
+./02_vpnSetup.sh
+```
+
+### If you do not need the VPN server
+
+To delete the deployed Pritunl VM:
+
+```bash
+./0201_createPritunlVM.sh --destroy
+```
+
+### If you want to skip this validation temporarily
+
+Create the following file, then run `02_vpnSetup.sh` again:
+
+```bash
+touch /root/demo
+./02_vpnSetup.sh
+```
+
+### Notes
+
+Even if this validation fails, the **VM itself may already be deployed and still running**.  
+You can inspect it manually if needed:
+
+```bash
+ssh root@<Pritunl-VM-IP>
+ping <GW IP Address>
+```
