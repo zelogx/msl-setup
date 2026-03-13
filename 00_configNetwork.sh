@@ -976,10 +976,12 @@ class TUIApp:
             no_text=cancel_opt,
             default_yes=False,
         )
-        if result is True:
-            return False  # Discard selected: return False to exit loop
+        # Keep semantics explicit for this screen:
+        # Discard -> exit loop (False), Cancel -> continue loop (True).
+        if result is False:
+            return False
         self.status = self.msg["status_ready"]
-        return True  # Cancel selected: return True to continue
+        return True
 
     def _show_generate_confirm(self) -> bool:
         """Show .env generation confirmation dialog."""
