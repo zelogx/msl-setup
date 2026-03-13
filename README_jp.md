@@ -53,6 +53,7 @@ cd msl-setup
 
 # Phase 1: ネットワークセットアップ (設定確認 + SDN構築)
 ./01_networkSetup.sh jp   # 言語: en|jp (省略時 en)
+./01_networkSetup.sh jp --restore   # SDN/ネットワーク設定をバックアップ状態へ復元
 # Phase 1 完了後、ルーター設定を実施してください（ポートフォワード、静的ルート）
 # Phase 1 終了時に表示される指示に従ってください
 

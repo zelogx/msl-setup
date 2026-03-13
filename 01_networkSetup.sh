@@ -17,7 +17,7 @@
 #   - 0102_setupNetwork.sh
 #
 # Usage:
-#   ./01_networkSetup.sh [en|jp]
+#   ./01_networkSetup.sh [en|jp] [--restore]
 #
 # Notes:
 #   - Executes sub-scripts sequentially
@@ -31,14 +31,49 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Parse language argument (default: en)
-LANG_ARG="${1:-en}"
+print_usage() {
+    cat <<'USAGE'
+Usage: ./01_networkSetup.sh [en|jp] [--restore]
+  en|jp      Console language (default: en)
+  --restore  Restore SDN/firewall to backup state and exit
+USAGE
+}
 
-if [[ "$LANG_ARG" != "en" && "$LANG_ARG" != "jp" ]]; then
-    echo "Usage: $0 [en|jp]"
-    echo "  en: English (default)"
-    echo "  jp: Japanese"
-    exit 1
+LANG_ARG="en"
+RESTORE_ONLY=false
+LANG_SET=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        en|jp)
+            if [[ "$LANG_SET" == true ]]; then
+                echo "ERROR: Multiple language codes specified"
+                print_usage
+                exit 1
+            fi
+            LANG_ARG="$1"
+            LANG_SET=true
+            shift
+            ;;
+        --restore)
+            RESTORE_ONLY=true
+            shift
+            ;;
+        -h|--help)
+            print_usage
+            exit 0
+            ;;
+        *)
+            echo "ERROR: Unknown argument: $1"
+            print_usage
+            exit 1
+            ;;
+    esac
+done
+
+setup_cmd=(./0102_setupNetwork.sh "$LANG_ARG")
+if [[ "$RESTORE_ONLY" == true ]]; then
+    setup_cmd+=(--restore)
 fi
 
 ################################################################################
@@ -46,7 +81,11 @@ fi
 ################################################################################
 echo ""
 echo "=========================================="
-if [[ "$LANG_ARG" == "jp" ]]; then
+if [[ "$RESTORE_ONLY" == true && "$LANG_ARG" == "jp" ]]; then
+    echo "フェーズ 1.2: Proxmox SDN リストア"
+elif [[ "$RESTORE_ONLY" == true ]]; then
+    echo "Phase 1.2: Proxmox SDN Restore"
+elif [[ "$LANG_ARG" == "jp" ]]; then
     echo "フェーズ 1.2: Proxmox SDN セットアップ"
 else
     echo "Phase 1.2: Proxmox SDN Setup"
@@ -54,8 +93,16 @@ fi
 echo "=========================================="
 echo ""
 
-if ! ./0102_setupNetwork.sh "$LANG_ARG"; then
-    if [[ "$LANG_ARG" == "jp" ]]; then
+if ! "${setup_cmd[@]}"; then
+    if [[ "$RESTORE_ONLY" == true && "$LANG_ARG" == "jp" ]]; then
+        echo ""
+        echo "エラー: SDN リストアが失敗しました"
+        echo "詳細はログを確認してください: logs/"
+    elif [[ "$RESTORE_ONLY" == true ]]; then
+        echo ""
+        echo "ERROR: SDN restore failed"
+        echo "Check logs for details: logs/"
+    elif [[ "$LANG_ARG" == "jp" ]]; then
         echo ""
         echo "エラー: SDN セットアップが失敗しました"
         echo "詳細はログを確認してください: logs/"
@@ -72,7 +119,11 @@ fi
 ################################################################################
 echo ""
 echo "=========================================="
-if [[ "$LANG_ARG" == "jp" ]]; then
+if [[ "$RESTORE_ONLY" == true && "$LANG_ARG" == "jp" ]]; then
+    echo "フェーズ 1 完了: ネットワーク設定をバックアップ状態に復元しました"
+elif [[ "$RESTORE_ONLY" == true ]]; then
+    echo "Phase 1 Complete: Network Configuration Restored to Backup State"
+elif [[ "$LANG_ARG" == "jp" ]]; then
     echo "フェーズ 1 完了: ネットワークセットアップ成功"
     echo ""
     echo "次のステップ:"

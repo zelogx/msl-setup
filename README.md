@@ -54,6 +54,7 @@ cd msl-setup
 
 # Phase 1: Network Setup (check config + SDN setup)
 ./01_networkSetup.sh en   # Language: en|jp (default en)
+./01_networkSetup.sh en --restore   # Restore SDN/network config to backup state
 
 # Phase 2: VPN Setup (Pritunl VM deployment + configuration)
 ./02_vpnSetup.sh en       # Language: en|jp (default en)

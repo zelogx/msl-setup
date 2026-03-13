@@ -29,6 +29,7 @@
 ################################################################################
 
 import curses
+import json
 import os
 import re
 import shlex
@@ -54,6 +55,14 @@ def _tlog(msg: str) -> None:
 DEFAULT_NUM_PJ = 8
 DEFAULT_OVPN_START = 11856
 DEFAULT_WG_START = 15952
+
+# Fallback network defaults used only when bash-derived values are unavailable.
+# Keep all editable network default addresses in this single block.
+DEFAULT_NETWORK_CIDRS = {
+    "VPNDMZ_CIDR": "192.168.80.0/24",
+    "VPN_POOL": "192.168.81.0/24",
+    "PJALL_CIDR": "172.16.16.0/21",
+}
 
 LANG_EN = "en"
 LANG_JP = "jp"
@@ -230,6 +239,7 @@ class BashRunner:
     def __init__(self, lang: str) -> None:
         self.lang = lang
         self._base_config: Dict[str, str] = {}  # cached from first bash run
+        self._existing_networks: List[str] = []
 
     def _run_bash(self, script: str) -> Tuple[int, str, str]:
         env = os.environ.copy()
@@ -320,8 +330,6 @@ declare -A CONFIG
 CONFIG[NUM_PJ]="8"
 
 # Override slow functions with no-ops for base config collection
-input_vpn_pool() {{ CONFIG[VPN_POOL]=""; }}
-input_pjall_network() {{ CONFIG[PJALL_CIDR]=""; }}
 input_port_ranges() {{ :; }}
 
 exec 3<&0
@@ -362,6 +370,147 @@ done
             config[key.strip()] = value.strip()
         return config
 
+    def get_existing_networks(self) -> List[str]:
+        """Get existing networks from lib/network.sh (cached)."""
+        if self._existing_networks:
+            return list(self._existing_networks)
+
+        script = f"""
+    set -euo pipefail
+    SCRIPT_DIR=\"{SCRIPT_DIR}\"
+    source \"{SCRIPT_DIR}/lib/common.sh\"
+    source \"{SCRIPT_DIR}/lib/network.sh\"
+    printf "__OUTPUT__\\n"
+    detect_existing_networks || true
+"""
+        code, out, err = self._run_bash(script)
+        if code != 0:
+            raise RuntimeError(err.strip() or "detect_existing_networks failed")
+
+        lines = out.splitlines()
+        try:
+            start = lines.index("__OUTPUT__") + 1
+        except ValueError:
+            return []
+
+        networks: List[str] = []
+        for line in lines[start:]:
+            cidr = line.strip()
+            if cidr:
+                networks.append(cidr)
+
+        # Fallback: if shell-side detect_existing_networks yields no data,
+        # collect from runtime sources in Python without modifying shell scripts.
+        if not networks:
+            networks = self._collect_existing_networks_fallback()
+
+        self._existing_networks = networks
+        return list(self._existing_networks)
+
+    def _collect_existing_networks_fallback(self) -> List[str]:
+        """Collect existing networks from OS/Proxmox runtime sources as fallback."""
+        discovered: List[str] = []
+
+        def add_cidr(cidr: str) -> None:
+            cidr = (cidr or "").strip()
+            if not cidr:
+                return
+            try:
+                net = IPv4Network(cidr, strict=False)
+                if net.prefixlen == 0:
+                    return
+                if net.network_address.is_loopback:
+                    return
+                discovered.append(str(net))
+            except Exception:
+                return
+
+        # 1) Kernel routes
+        try:
+            res = subprocess.run(
+                ["ip", "-o", "-4", "route", "show"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    parts = line.split()
+                    if not parts:
+                        continue
+                    dst = parts[0]
+                    if dst in ("default", "0.0.0.0/0"):
+                        continue
+                    if re.match(r"^\d+\.\d+\.\d+\.\d+/\d+$", dst):
+                        add_cidr(dst)
+        except Exception:
+            pass
+
+        # 2) Interface addresses
+        try:
+            res = subprocess.run(
+                ["ip", "-o", "-4", "addr", "show", "scope", "global"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    m = re.search(r"\binet\s+(\d+\.\d+\.\d+\.\d+/\d+)\b", line)
+                    if m:
+                        add_cidr(m.group(1))
+        except Exception:
+            pass
+
+        # 3) Static config files (CIDR literals)
+        for cfg_path in ("/etc/network/interfaces", "/etc/pve/sdn/subnets.cfg", "/etc/pve/sdn/vnets.cfg"):
+            try:
+                if os.path.isfile(cfg_path):
+                    with open(cfg_path, "r", encoding="utf-8", errors="ignore") as f:
+                        text = f.read()
+                    for m in re.findall(r"\b\d+\.\d+\.\d+\.\d+/\d+\b", text):
+                        add_cidr(m)
+            except Exception:
+                pass
+
+        # 4) Proxmox SDN subnets
+        try:
+            res = subprocess.run(
+                ["pvesh", "get", "/cluster/sdn/subnets", "--output-format", "json"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                data = json.loads(res.stdout)
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict):
+                            add_cidr(str(item.get("subnet", "")))
+        except Exception:
+            pass
+
+        # Normalize, deduplicate, and drop child subnets included by larger networks.
+        unique_nets: List[IPv4Network] = []
+        seen = set()
+        for cidr in discovered:
+            try:
+                net = IPv4Network(cidr, strict=False)
+                if str(net) not in seen:
+                    unique_nets.append(net)
+                    seen.add(str(net))
+            except Exception:
+                continue
+
+        reduced: List[IPv4Network] = []
+        for net in unique_nets:
+            if any(net != other and net.subnet_of(other) for other in unique_nets):
+                continue
+            reduced.append(net)
+
+        reduced.sort(key=lambda n: (int(n.network_address), n.prefixlen))
+        return [str(n) for n in reduced]
+
     def compute_config(self, num_pj: int, ovpn_start: int, wg_start: int) -> Dict[str, str]:
         """Compute full configuration: bash once (cached) + Python for subnets/pools."""
         import time
@@ -376,9 +525,10 @@ done
         t0 = time.time()
         pj_networks: Dict[str, str] = {}
         pool_splits: Dict[str, str] = {}
-        # Use PJALL_CIDR/VPN_POOL from base config if available, else default
-        pjall = self._base_config.get("PJALL_CIDR") or "172.16.16.0/21"
-        vpn_pool = self._base_config.get("VPN_POOL") or "192.168.81.0/24"
+        # Use CIDRs proposed by bash input functions.
+        # Keep static defaults only as a last-resort fallback.
+        pjall = self._base_config.get("PJALL_CIDR") or DEFAULT_NETWORK_CIDRS["PJALL_CIDR"]
+        vpn_pool = self._base_config.get("VPN_POOL") or DEFAULT_NETWORK_CIDRS["VPN_POOL"]
         try:
             pj_networks = self._calculate_subnet_py(pjall, num_pj)
             pool_splits = self._split_pool_py(vpn_pool, num_pj)
@@ -390,7 +540,7 @@ done
         config = dict(self._base_config)
         config.update(pj_networks)
         config.update(pool_splits)
-        # Restore PJALL_CIDR and VPN_POOL (overwritten as empty by no-op in base config)
+        # Restore PJALL_CIDR and VPN_POOL from resolved/fallback values.
         config["PJALL_CIDR"] = pjall
         config["VPN_POOL"] = vpn_pool
         config["NUM_PJ"] = str(num_pj)
@@ -743,11 +893,11 @@ class TUIApp:
                 wg_subnets = list(wg_pool.subnets(new_prefix=pj_prefix))
                 
                 for i in range(num_pj):
-                    pj_num = f"{i+1:02d}"
+                    pool_num = i + 1
                     if i < len(ovpn_subnets):
-                        result[f"OVPN_POOL{pj_num}"] = str(ovpn_subnets[i])
+                        result[f"OVPN_POOL{pool_num}"] = str(ovpn_subnets[i])
                     if i < len(wg_subnets):
-                        result[f"WG_POOL{pj_num}"] = str(wg_subnets[i])
+                        result[f"WG_POOL{pool_num}"] = str(wg_subnets[i])
         except (ValueError, IndexError, AttributeError):
             pass
         
@@ -820,6 +970,41 @@ class TUIApp:
         wg_range = set(range(self.wg_start, self.wg_start + self.num_pj))
         if ovpn_range & wg_range:
             return (False, f"Port conflict: OpenVPN ({min(ovpn_range)}-{max(ovpn_range)}) overlaps WireGuard ({min(wg_range)}-{max(wg_range)})")
+        return (True, "")
+
+    def _validate_network_conflicts_before_save(self) -> Tuple[bool, str]:
+        """Validate network overlaps against existing networks before saving."""
+        try:
+            existing_networks = self.runner.get_existing_networks()
+        except Exception:
+            existing_networks = []
+
+        # Parent CIDRs must not overlap each other.
+        parent_keys = ("VPNDMZ_CIDR", "VPN_POOL", "PJALL_CIDR")
+        parent_values = []
+        for key in parent_keys:
+            value = (self.config.get(key, "") or "").strip()
+            if value and self._is_valid_cidr(value):
+                parent_values.append((key, value))
+
+        for i, (k1, c1) in enumerate(parent_values):
+            for k2, c2 in parent_values[i + 1:]:
+                if self._cidr_overlaps(c1, c2):
+                    return (False, f"{k1} overlaps with {k2} ({c2})")
+
+        # Check effective proposed CIDRs (parents + split subnets) against existing networks.
+        candidate_cidrs: List[Tuple[str, str]] = []
+        for key, value in self.config.items():
+            if key in parent_keys or re.match(r"^(OVPN_POOL\d+|WG_POOL\d+|PJ\d{2}_CIDR)$", key):
+                cidr = (value or "").strip()
+                if cidr and self._is_valid_cidr(cidr):
+                    candidate_cidrs.append((key, cidr))
+
+        for key, cidr in candidate_cidrs:
+            for existing in existing_networks:
+                if self._is_valid_cidr(existing) and self._cidr_overlaps(cidr, existing):
+                    return (False, f"{key} ({cidr}) overlaps with existing network {existing}")
+
         return (True, "")
 
     def _show_dialog(
@@ -978,7 +1163,7 @@ class TUIApp:
         )
         # Keep semantics explicit for this screen:
         # Discard -> exit loop (False), Cancel -> continue loop (True).
-        if result is False:
+        if result is True:
             return False
         self.status = self.msg["status_ready"]
         return True
@@ -1771,6 +1956,11 @@ class TUIApp:
                     if not is_valid:
                         self.status = f"{self.msg['status_error']}{error_msg}"
                         return True
+
+                    is_valid, error_msg = self._validate_network_conflicts_before_save()
+                    if not is_valid:
+                        self.status = f"{self.msg['status_error']}{error_msg}"
+                        return True
                     
                     # CUSTOM mode: validate all custom fields before generating .env
                     # Check all 8 custom fields are filled and valid
@@ -1825,6 +2015,10 @@ class TUIApp:
             # AUTO mode: focus 4 is OK button, focus 2-3 are port fields
             if self.focus_index == 4:
                 is_valid, error_msg = self._validate_ports()
+                if not is_valid:
+                    self.status = f"{self.msg['status_error']}{error_msg}"
+                    return True
+                is_valid, error_msg = self._validate_network_conflicts_before_save()
                 if not is_valid:
                     self.status = f"{self.msg['status_error']}{error_msg}"
                     return True
@@ -1975,6 +2169,39 @@ class TUIApp:
         except (ValueError, TypeError) as e:
             return (False, f"invalid address or subnet: {str(e)}")
 
+    def _cidr_overlaps(self, cidr1: str, cidr2: str) -> bool:
+        """Check whether two CIDRs overlap."""
+        try:
+            net1 = IPv4Network(cidr1.strip(), strict=False)
+            net2 = IPv4Network(cidr2.strip(), strict=False)
+            return net1.overlaps(net2)
+        except Exception:
+            return False
+
+    def _validate_cidr_conflicts(self, field_key: str, value: str, cfg: Dict[str, str]) -> Tuple[bool, str]:
+        """Validate CIDR conflicts against existing networks and peer CIDR fields."""
+        cidr_fields = ("VPNDMZ_CIDR", "VPN_POOL", "PJALL_CIDR")
+
+        # Check against existing networks discovered from host/Proxmox state.
+        try:
+            existing_networks = self.runner.get_existing_networks()
+        except Exception:
+            existing_networks = []
+
+        for existing_cidr in existing_networks:
+            if self._is_valid_cidr(existing_cidr) and self._cidr_overlaps(value, existing_cidr):
+                return (False, f"{field_key}: overlaps with existing network {existing_cidr}")
+
+        # Check against other configured parent CIDRs in CUSTOM mode.
+        for other_key in cidr_fields:
+            if other_key == field_key:
+                continue
+            other_cidr = (cfg.get(other_key, "") or "").strip()
+            if other_cidr and self._is_valid_cidr(other_cidr) and self._cidr_overlaps(value, other_cidr):
+                return (False, f"{field_key}: overlaps with {other_key} ({other_cidr})")
+
+        return (True, "")
+
     def _validate_custom_field(self, field_key: str, value: str) -> Tuple[bool, str]:
         """Validate a custom field value. Returns (is_valid, error_message)."""
         value = value.strip()
@@ -1991,6 +2218,9 @@ class TUIApp:
                 return (False, f"{field_key}: must use network address, not host address")
             if not self._is_private_ip(value.split('/')[0]):
                 return (False, f"{field_key}: must be private IP range")
+            is_ok, err = self._validate_cidr_conflicts(field_key, value, cfg)
+            if not is_ok:
+                return (False, err)
             return (True, "")
         
         elif field_key == "VPNDMZ_CIDR":
@@ -2006,6 +2236,9 @@ class TUIApp:
                     return (False, f"{field_key}: minimum /30 required for gateway assignment")
             except (ValueError, IndexError):
                 pass
+            is_ok, err = self._validate_cidr_conflicts(field_key, value, cfg)
+            if not is_ok:
+                return (False, err)
             return (True, "")
         
         elif field_key == "VPN_POOL":
@@ -2015,6 +2248,9 @@ class TUIApp:
                 return (False, f"{field_key}: must use network address, not host address")
             if not self._is_private_ip(value.split('/')[0]):
                 return (False, f"{field_key}: must be private IP range")
+            is_ok, err = self._validate_cidr_conflicts(field_key, value, cfg)
+            if not is_ok:
+                return (False, err)
             return (True, "")
         
         # Host address fields (no /XX notation)
