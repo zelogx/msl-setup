@@ -75,9 +75,9 @@ DEFAULT_WG_START = 15952
 # Fallback network defaults used only when bash-derived values are unavailable.
 # Keep all editable network default addresses in this single block.
 DEFAULT_NETWORK_CIDRS = {
-    "VPNDMZ_CIDR": "192.168.180.0/24",
-    "VPN_POOL": "192.168.181.0/24",
-    "PJALL_CIDR": "172.19.16.0/21",
+    "VPNDMZ_CIDR": "192.168.80.0/24",
+    "VPN_POOL": "192.168.81.0/24",
+    "PJALL_CIDR": "172.16.16.0/21",
 }
 
 LANG_EN = "en"
