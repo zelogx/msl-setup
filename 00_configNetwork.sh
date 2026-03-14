@@ -35,6 +35,7 @@ import re
 import shlex
 import subprocess
 import sys
+import textwrap
 from datetime import datetime
 from typing import Dict, List, Tuple
 from ipaddress import IPv4Network, IPv4Address, ip_address
@@ -46,11 +47,26 @@ PROJECT_ROOT = SCRIPT_DIR
 MSL_TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 TIMING_LOG = "/tmp/0101_timing.log"
+MSL_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", f"msl-setup_{MSL_TIMESTAMP}.log")
 
 def _tlog(msg: str) -> None:
     """Write timing message to log file, flushed immediately."""
     with open(TIMING_LOG, "a") as f:
         f.write(msg + "\n")
+
+def _mlog(level: str, msg: str) -> None:
+    """Write a structured log entry to the shared MSL log file.
+
+    Uses the same format as lib/common.sh: [LEVEL] [YYYY-MM-DD HH:MM:SS] message
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{level}] [{timestamp}] {msg}\n"
+    try:
+        os.makedirs(os.path.dirname(MSL_LOG), exist_ok=True)
+        with open(MSL_LOG, "a") as f:
+            f.write(line)
+    except Exception:
+        pass
 
 DEFAULT_NUM_PJ = 8
 DEFAULT_OVPN_START = 11856
@@ -59,9 +75,9 @@ DEFAULT_WG_START = 15952
 # Fallback network defaults used only when bash-derived values are unavailable.
 # Keep all editable network default addresses in this single block.
 DEFAULT_NETWORK_CIDRS = {
-    "VPNDMZ_CIDR": "192.168.80.0/24",
-    "VPN_POOL": "192.168.81.0/24",
-    "PJALL_CIDR": "172.16.16.0/21",
+    "VPNDMZ_CIDR": "192.168.180.0/24",
+    "VPN_POOL": "192.168.181.0/24",
+    "PJALL_CIDR": "172.19.16.0/21",
 }
 
 LANG_EN = "en"
@@ -77,14 +93,14 @@ MESSAGES = {
         "ovpn_ports_label": "OpenVPN Ports:",
         "wg_ports_label": "WireGuard Ports:",
         "ok_button": "SAVE",
-        "status_ready": "Tab: Next  Shift+Tab: Prev  Enter: Edit/Save  Esc: Exit  PgUp/PgDn: Scroll",
+        "status_ready": "Tab: Next  Shift+Tab: Prev  Enter: Edit/Save  Esc: Exit  N: Networks  PgUp/PgDn: Scroll",
         "status_calc": "Calculating network configuration...",
         "status_error": "Error: ",
         "status_env_ok": "Configuration file generated successfully",
         "status_env_fail": "Failed to generate configuration file",
         "status_resize": "Terminal too small. Resize to at least 80x24.",
-        "preview_empty": "(no preview yet)",
-        "preview_title": "Configuration Preview (Auto-calculated)",
+        "preview_empty": "(Detecting existing networks...)",
+        "preview_title": "Configuration Preview",
         "section_mainlan": "MainLAN Configuration",
         "section_pritunl": "Pritunl IP Configuration",
         "section_vpndmz": "VPN DMZ Network",
@@ -148,6 +164,10 @@ MESSAGES = {
         "svg_fail_title": "Network Diagram",
         "svg_fail_msg": "Failed to add network diagram to Proxmox notes.",
         "notice_ok": "[O] OK",
+        "networks_title": "Detected Existing Networks",
+        "networks_empty": "No existing networks detected.",
+        "networks_hint": "[Up/Down/PgUp/PgDn] Scroll  [Enter/Esc] Close",
+        "networks_error": "Failed to detect existing networks",
     },
     LANG_JP: {
         "title": "Zelogx MSL Setup ネットワーク設定",
@@ -158,14 +178,14 @@ MESSAGES = {
         "ovpn_ports_label": "OpenVPN ポート:",
         "wg_ports_label": "WireGuard ポート:",
         "ok_button": "保存",
-        "status_ready": "Tab: 次へ  Shift+Tab: 前へ  Enter: 編集/保存  Esc: 終了  PgUp/PgDn: スクロール",
+        "status_ready": "Tab: 次へ  Shift+Tab: 前へ  Enter: 編集/保存  Esc: 終了  N: Networks  PgUp/PgDn: スクロール",
         "status_calc": "ネットワーク設定を計算中...",
         "status_error": "エラー: ",
         "status_env_ok": "設定ファイルの生成に成功しました",
         "status_env_fail": "設定ファイルの生成に失敗しました",
         "status_resize": "端末サイズが小さすぎます。80x24以上にしてください。",
-        "preview_empty": "(no preview yet)",
-        "preview_title": "設定プレビュー（自動計算）",
+        "preview_empty": "(既存ネットワークの検出中です...)",
+        "preview_title": "設定プレビュー",
         "section_mainlan": "MainLAN 設定",
         "section_pritunl": "Pritunl IP 設定",
         "section_vpndmz": "VPN DMZ ネットワーク",
@@ -229,6 +249,10 @@ MESSAGES = {
         "svg_fail_title": "ネットワーク図",
         "svg_fail_msg": "ネットワーク図の追加に失敗しました。",
         "notice_ok": "[O] OK",
+        "networks_title": "検出済み既設ネットワーク",
+        "networks_empty": "既設ネットワークは検出されませんでした。",
+        "networks_hint": "[Up/Down/PgUp/PgDn] スクロール  [Enter/Esc] 閉じる",
+        "networks_error": "既設ネットワークの検出に失敗しました",
     },
 }
 
@@ -383,28 +407,50 @@ done
     printf "__OUTPUT__\\n"
     detect_existing_networks || true
 """
+        bash_networks: List[str] = []
         code, out, err = self._run_bash(script)
         if code != 0:
-            raise RuntimeError(err.strip() or "detect_existing_networks failed")
+            _mlog("WARN", f"detect_existing_networks (bash) failed: {err.strip() or 'unknown error'}")
+        else:
+            lines = out.splitlines()
+            try:
+                start = lines.index("__OUTPUT__") + 1
+                for line in lines[start:]:
+                    cidr = line.strip()
+                    if cidr and self._is_valid_cidr(cidr):
+                        bash_networks.append(str(IPv4Network(cidr, strict=False)))
+            except ValueError:
+                _mlog("WARN", "detect_existing_networks (bash) output marker not found")
 
-        lines = out.splitlines()
-        try:
-            start = lines.index("__OUTPUT__") + 1
-        except ValueError:
-            return []
+        if bash_networks:
+            _mlog("INFO", f"detect_existing_networks (bash) valid entries: {len(bash_networks)}")
+        else:
+            _mlog("INFO", "detect_existing_networks (bash) returned no valid CIDRs")
 
-        networks: List[str] = []
-        for line in lines[start:]:
-            cidr = line.strip()
-            if cidr:
-                networks.append(cidr)
+        # Python runtime detection is the primary source because it is more reliable
+        # in this TUI context; bash results are merged as supplemental hints.
+        py_networks = self._collect_existing_networks_fallback()
 
-        # Fallback: if shell-side detect_existing_networks yields no data,
-        # collect from runtime sources in Python without modifying shell scripts.
-        if not networks:
-            networks = self._collect_existing_networks_fallback()
+        merged: List[IPv4Network] = []
+        seen = set()
+        for cidr in py_networks + bash_networks:
+            try:
+                net = IPv4Network(cidr, strict=False)
+                key = str(net)
+                if key not in seen:
+                    merged.append(net)
+                    seen.add(key)
+            except Exception:
+                continue
+
+        merged.sort(key=lambda n: (int(n.network_address), n.prefixlen))
+        networks = [str(n) for n in merged]
 
         self._existing_networks = networks
+        _mlog(
+            "INFO",
+            f"Existing networks detected ({len(networks)}): {', '.join(networks) if networks else '(none)'}",
+        )
         return list(self._existing_networks)
 
     def _collect_existing_networks_fallback(self) -> List[str]:
@@ -509,7 +555,79 @@ done
             reduced.append(net)
 
         reduced.sort(key=lambda n: (int(n.network_address), n.prefixlen))
-        return [str(n) for n in reduced]
+        result_cidrs = [str(n) for n in reduced]
+        _mlog("INFO", f"Python fallback found {len(result_cidrs)} existing network(s): {', '.join(result_cidrs) if result_cidrs else '(none)'}")
+        return result_cidrs
+
+    def _is_valid_cidr(self, cidr: str) -> bool:
+        """Return True if cidr can be parsed as IPv4 CIDR."""
+        try:
+            IPv4Network((cidr or "").strip(), strict=False)
+            return True
+        except Exception:
+            return False
+
+    def _cidr_overlaps(self, cidr1: str, cidr2: str) -> bool:
+        """Return True when two CIDRs overlap."""
+        try:
+            net1 = IPv4Network(cidr1.strip(), strict=False)
+            net2 = IPv4Network(cidr2.strip(), strict=False)
+            return net1.overlaps(net2)
+        except Exception:
+            return False
+
+    def _pick_parent_cidrs(self, num_pj: int) -> Dict[str, str]:
+        """Pick parent CIDRs, preferring DEFAULT_NETWORK_CIDRS when safe.
+
+        Selection policy:
+        1) Prefer values in DEFAULT_NETWORK_CIDRS.
+        2) If preferred value conflicts with existing networks or already selected
+           parent CIDRs, fall back to bash-derived value from self._base_config.
+        """
+        result: Dict[str, str] = {}
+        existing = self.get_existing_networks()
+        _mlog("INFO", f"_pick_parent_cidrs: evaluating DEFAULT_NETWORK_CIDRS against {len(existing)} existing network(s)")
+
+        keys = ("VPNDMZ_CIDR", "VPN_POOL", "PJALL_CIDR")
+        for key in keys:
+            preferred = (DEFAULT_NETWORK_CIDRS.get(key, "") or "").strip()
+            fallback = (self._base_config.get(key, "") or "").strip()
+
+            chosen = fallback
+            preferred_has_conflict = False
+            if self._is_valid_cidr(preferred):
+                conflict = False
+                conflict_with = ""
+                for existing_cidr in existing:
+                    if self._is_valid_cidr(existing_cidr) and self._cidr_overlaps(preferred, existing_cidr):
+                        conflict = True
+                        conflict_with = existing_cidr
+                        break
+                if not conflict:
+                    for selected_key, selected_cidr in result.items():
+                        if self._is_valid_cidr(selected_cidr) and self._cidr_overlaps(preferred, selected_cidr):
+                            conflict = True
+                            conflict_with = f"{selected_key}={selected_cidr} (already selected)"
+                            break
+                if not conflict:
+                    chosen = preferred
+                    _mlog("INFO", f"  {key}: DEFAULT {preferred} -> no conflict, adopted")
+                else:
+                    preferred_has_conflict = True
+                    _mlog("WARN", f"  {key}: DEFAULT {preferred} conflicts with {conflict_with}; falling back to bash value '{fallback}'")
+            else:
+                if preferred:
+                    _mlog("WARN", f"  {key}: DEFAULT value '{preferred}' is not a valid CIDR; skipping")
+
+            # Only use preferred as last resort when it has NO conflict.
+            # If preferred conflicts with existing networks, keep chosen=fallback (even if empty).
+            if not chosen and not preferred_has_conflict:
+                chosen = preferred if preferred else fallback
+
+            result[key] = chosen
+            _mlog("INFO", f"  {key}: final choice = '{chosen}'")
+
+        return result
 
     def compute_config(self, num_pj: int, ovpn_start: int, wg_start: int) -> Dict[str, str]:
         """Compute full configuration: bash once (cached) + Python for subnets/pools."""
@@ -525,10 +643,12 @@ done
         t0 = time.time()
         pj_networks: Dict[str, str] = {}
         pool_splits: Dict[str, str] = {}
-        # Use CIDRs proposed by bash input functions.
-        # Keep static defaults only as a last-resort fallback.
-        pjall = self._base_config.get("PJALL_CIDR") or DEFAULT_NETWORK_CIDRS["PJALL_CIDR"]
-        vpn_pool = self._base_config.get("VPN_POOL") or DEFAULT_NETWORK_CIDRS["VPN_POOL"]
+        # Prefer DEFAULT_NETWORK_CIDRS when they are safe to use;
+        # otherwise, fall back to bash-derived proposals.
+        selected_parents = self._pick_parent_cidrs(num_pj)
+        vpndmz = selected_parents.get("VPNDMZ_CIDR", "")
+        pjall = selected_parents.get("PJALL_CIDR", "")
+        vpn_pool = selected_parents.get("VPN_POOL", "")
         try:
             pj_networks = self._calculate_subnet_py(pjall, num_pj)
             pool_splits = self._split_pool_py(vpn_pool, num_pj)
@@ -540,7 +660,8 @@ done
         config = dict(self._base_config)
         config.update(pj_networks)
         config.update(pool_splits)
-        # Restore PJALL_CIDR and VPN_POOL from resolved/fallback values.
+        # Restore parent CIDRs from resolved/fallback values.
+        config["VPNDMZ_CIDR"] = vpndmz
         config["PJALL_CIDR"] = pjall
         config["VPN_POOL"] = vpn_pool
         config["NUM_PJ"] = str(num_pj)
@@ -718,6 +839,8 @@ class TUIApp:
         self.focus_index = 0
         self.edit_field = None
         self.edit_buffer = ""
+        self.edit_cursor = 0
+        self.edit_insert_mode = True
 
         self.config: Dict[str, str] = {}
         self.last_good_config: Dict[str, str] = {}
@@ -887,10 +1010,14 @@ class TUIApp:
                 result["OVPN_POOL"] = str(ovpn_pool)
                 result["WG_POOL"] = str(wg_pool)
                 
-                # Further split each into num_pj subnets (prefix + 1 again)
-                pj_prefix = next_prefix + 2  # +2 to accommodate num_pj projects (2^2=4, but use +2 for flexibility)
-                ovpn_subnets = list(ovpn_pool.subnets(new_prefix=pj_prefix))
-                wg_subnets = list(wg_pool.subnets(new_prefix=pj_prefix))
+                # Further split each half into NUM_PJ pools.
+                # bits_needed: 2->1, 4->2, 8->3, 16->4
+                bits_needed = (max(num_pj, 1) - 1).bit_length()
+                pj_prefix = ovpn_pool.prefixlen + bits_needed
+                if pj_prefix > 30:
+                    return result
+                ovpn_subnets = list(ovpn_pool.subnets(new_prefix=pj_prefix))[:num_pj]
+                wg_subnets = list(wg_pool.subnets(new_prefix=pj_prefix))[:num_pj]
                 
                 for i in range(num_pj):
                     pool_num = i + 1
@@ -953,6 +1080,15 @@ class TUIApp:
         
         # VPN pools from VPN_POOL
         if "VPN_POOL" in self.config and self.config["VPN_POOL"]:
+            # Clear previous per-project pool keys to avoid stale entries
+            # when NUM_PJ or VPN_POOL changes (e.g., 8 -> 16 or 16 -> 4).
+            stale_pool_keys = [
+                k for k in list(self.config.keys())
+                if re.match(r"^(OVPN_POOL\d+|WG_POOL\d+)$", k)
+            ]
+            for key in stale_pool_keys:
+                self.config.pop(key, None)
+
             vpn_pools = self._calculate_vpn_pools(self.config["VPN_POOL"], self.num_pj)
             self.config.update(vpn_pools)
 
@@ -1204,6 +1340,95 @@ class TUIApp:
         ok_text = self.msg.get("notice_ok", "[O] OK")
         self._show_dialog("notice", title, [msg], ok_text=ok_text)
 
+    def _show_networks_dialog(self) -> None:
+        """Show detected existing networks in a scrollable dialog."""
+        title = self.msg.get("networks_title", "Detected Existing Networks")
+        try:
+            networks = self.runner.get_existing_networks()
+        except Exception as exc:
+            self._show_notice_dialog(
+                title,
+                f"{self.msg.get('networks_error', 'Failed to detect existing networks')}: {exc}",
+            )
+            return
+
+        lines = list(networks) if networks else [self.msg.get("networks_empty", "No existing networks detected.")]
+        scroll = 0
+
+        while True:
+            h, w = self.stdscr.getmaxyx()
+            dialog_h = min(max(10, len(lines) + 6), h - 2)
+            dialog_w = min(90, w - 2)
+            y = max(1, (h - dialog_h) // 2)
+            x = max(0, (w - dialog_w) // 2)
+
+            # Draw background
+            for row in range(y, min(y + dialog_h, h)):
+                try:
+                    self.stdscr.addstr(row, x, " " * (dialog_w - 1), curses.color_pair(1) | curses.A_REVERSE)
+                except curses.error:
+                    pass
+
+            # Border
+            try:
+                for col in range(x, x + dialog_w - 1):
+                    self.stdscr.addch(y, col, curses.ACS_HLINE, curses.color_pair(1))
+                    self.stdscr.addch(y + dialog_h - 1, col, curses.ACS_HLINE, curses.color_pair(1))
+                for row in range(y, y + dialog_h - 1):
+                    self.stdscr.addch(row, x, curses.ACS_VLINE, curses.color_pair(1))
+                    self.stdscr.addch(row, x + dialog_w - 2, curses.ACS_VLINE, curses.color_pair(1))
+                self.stdscr.addch(y, x, curses.ACS_ULCORNER, curses.color_pair(1))
+                self.stdscr.addch(y, x + dialog_w - 2, curses.ACS_URCORNER, curses.color_pair(1))
+                self.stdscr.addch(y + dialog_h - 1, x, curses.ACS_LLCORNER, curses.color_pair(1))
+                self.stdscr.addch(y + dialog_h - 1, x + dialog_w - 2, curses.ACS_LRCORNER, curses.color_pair(1))
+            except curses.error:
+                pass
+
+            try:
+                header = f"{title} ({len(networks)})"
+                self.stdscr.addstr(y, x + 2, header[: dialog_w - 4], curses.color_pair(1) | curses.A_BOLD)
+            except curses.error:
+                pass
+
+            body_top = y + 2
+            body_h = max(1, dialog_h - 5)
+            max_scroll = max(0, len(lines) - body_h)
+            scroll = max(0, min(scroll, max_scroll))
+
+            for i in range(body_h):
+                idx = scroll + i
+                if idx >= len(lines):
+                    break
+                try:
+                    text = f"{idx + 1:>2}. {lines[idx]}"
+                    self.stdscr.addstr(body_top + i, x + 2, text[: dialog_w - 4], curses.color_pair(1))
+                except curses.error:
+                    pass
+
+            try:
+                hint = self.msg.get("networks_hint", "[Up/Down/PgUp/PgDn] Scroll  [Enter/Esc] Close")
+                self.stdscr.addstr(y + dialog_h - 2, x + 2, hint[: dialog_w - 4], curses.color_pair(1))
+            except curses.error:
+                pass
+
+            self.stdscr.refresh()
+
+            ch = self.stdscr.getch()
+            if ch in (10, 13, 27, ord("q"), ord("Q")):
+                return
+            if ch == curses.KEY_UP:
+                scroll -= 1
+            elif ch == curses.KEY_DOWN:
+                scroll += 1
+            elif ch == curses.KEY_PPAGE:
+                scroll -= max(1, body_h - 1)
+            elif ch == curses.KEY_NPAGE:
+                scroll += max(1, body_h - 1)
+            elif ch == curses.KEY_HOME:
+                scroll = 0
+            elif ch == curses.KEY_END:
+                scroll = max_scroll
+
     def _show_svg_dialog(self) -> bool:
         """Show SVG generation dialog after .env save.
 
@@ -1302,7 +1527,7 @@ class TUIApp:
             return
 
         h, w = self.stdscr.getmaxyx()
-        dialog_h = 10  # Increased for error message
+        dialog_h = 12  # Keep room for wrapped error lines
         dialog_w = 70
         y = max(2, (h - dialog_h) // 2)
         x = max(0, (w - dialog_w) // 2)
@@ -1347,28 +1572,153 @@ class TUIApp:
         # Input label and current edit buffer value
         input_text = self.edit_buffer if self.edit_buffer is not None else original_value
         try:
-            self.stdscr.addstr(y + 3, x + 2, "New Value:", curses.color_pair(1))
-            display_text = input_text[:dialog_w - 16]
-            self.stdscr.addstr(y + 3, x + 14, display_text, curses.color_pair(1) | curses.A_BOLD)
-            # Cursor at end of text
-            cursor_x = min(x + 14 + len(input_text), w - 1)
-            self.stdscr.addstr(y + 3, cursor_x, "_", curses.color_pair(1) | curses.A_BOLD)
+            mode_label = "INS" if self.edit_insert_mode else "OVR"
+            self.stdscr.addstr(y + 3, x + 2, f"New Value ({mode_label}):", curses.color_pair(1))
+            field_x = x + 20
+            field_w = max(8, dialog_w - 22)
+
+            # Horizontal viewport that follows the cursor.
+            cursor = max(0, min(self.edit_cursor, len(input_text)))
+            if len(input_text) <= field_w:
+                offset = 0
+            else:
+                offset = max(0, min(cursor - field_w + 1, len(input_text) - field_w))
+
+            display_text = input_text[offset: offset + field_w]
+            self.stdscr.addstr(y + 3, field_x, display_text, curses.color_pair(1) | curses.A_BOLD)
+
+            # Draw cursor at logical edit position (not always at end).
+            cursor_in_view_raw = cursor - offset
+            cursor_in_view = max(0, min(cursor_in_view_raw, field_w - 1))
+            cursor_x = min(field_x + cursor_in_view, w - 1)
+
+            # Keep the original character visible and underline it.
+            # Only show '_' when the cursor is at end-of-text and there is room.
+            if 0 <= cursor_in_view_raw < len(display_text):
+                cursor_char = display_text[cursor_in_view_raw]
+                self.stdscr.addstr(
+                    y + 3,
+                    min(field_x + cursor_in_view_raw, w - 1),
+                    cursor_char,
+                    curses.color_pair(1) | curses.A_BOLD | curses.A_UNDERLINE,
+                )
+            else:
+                self.stdscr.addstr(y + 3, cursor_x, "_", curses.color_pair(1) | curses.A_BOLD)
         except curses.error:
             pass
         
         # Error message (if any)
+        instruction_y = y + 9
         if self.dialog_error:
             try:
-                error_text = f"Error: {self.dialog_error[:dialog_w - 12]}"
-                self.stdscr.addstr(y + 5, x + 2, error_text, curses.color_pair(5))
+                max_width = max(10, dialog_w - 4)
+                wrapped = textwrap.wrap(f"Error: {self.dialog_error}", width=max_width)
+                # Keep dialog readable in small terminals.
+                wrapped = wrapped[:3]
+                for i, line in enumerate(wrapped):
+                    self.stdscr.addstr(y + 5 + i, x + 2, line[:max_width], curses.color_pair(5))
+                instruction_y = y + 5 + len(wrapped) + 1
             except curses.error:
                 pass
         
         # Instructions
         try:
-            self.stdscr.addstr(y + 7, x + 2, "[Enter] Save  [ESC] Cancel", curses.color_pair(1))
+            instruction_text = "[Enter] Save  [ESC] Cancel  [<-/->/Home/End] Move  [Ins] Toggle"
+            self.stdscr.addstr(
+                instruction_y,
+                x + 2,
+                instruction_text[: max(0, dialog_w - 4)],
+                curses.color_pair(1),
+            )
         except curses.error:
             pass
+
+    def _edit_char_allowed(self, ch: str) -> bool:
+        """Return whether typed character is allowed for current edit field."""
+        if self.edit_field in ("ovpn", "wg"):
+            return ch.isdigit()
+        if self.edit_field and self.edit_field.startswith("custom_"):
+            return ch.isdigit() or ch in (".", "/")
+        return False
+
+    def _edit_max_len(self) -> int:
+        """Return max input length for current edit field."""
+        if self.edit_field in ("ovpn", "wg"):
+            return 5
+        return 20
+
+    def _handle_edit_input(self, ch: int) -> bool:
+        """Handle in-dialog text editing with cursor movement and insert/overwrite mode."""
+        if not self.edit_field:
+            return False
+
+        # Cursor movement
+        if ch == curses.KEY_LEFT:
+            self.edit_cursor = max(0, self.edit_cursor - 1)
+            return True
+        if ch == curses.KEY_RIGHT:
+            self.edit_cursor = min(len(self.edit_buffer), self.edit_cursor + 1)
+            return True
+        if ch == curses.KEY_HOME:
+            self.edit_cursor = 0
+            return True
+        if ch == curses.KEY_END:
+            self.edit_cursor = len(self.edit_buffer)
+            return True
+
+        # Toggle insert/overwrite mode
+        if ch == curses.KEY_IC:
+            self.edit_insert_mode = not self.edit_insert_mode
+            return True
+
+        # Delete before cursor
+        if ch in (curses.KEY_BACKSPACE, 127, 8):
+            if self.edit_cursor > 0:
+                self.edit_buffer = self.edit_buffer[: self.edit_cursor - 1] + self.edit_buffer[self.edit_cursor :]
+                self.edit_cursor -= 1
+            return True
+
+        # Delete at cursor
+        if ch == curses.KEY_DC:
+            if self.edit_cursor < len(self.edit_buffer):
+                self.edit_buffer = self.edit_buffer[: self.edit_cursor] + self.edit_buffer[self.edit_cursor + 1 :]
+            return True
+
+        # Character input
+        if 32 <= ch <= 126:
+            typed = chr(ch)
+            if not self._edit_char_allowed(typed):
+                return True
+
+            max_len = self._edit_max_len()
+            if self.edit_insert_mode:
+                if len(self.edit_buffer) >= max_len:
+                    return True
+                self.edit_buffer = (
+                    self.edit_buffer[: self.edit_cursor]
+                    + typed
+                    + self.edit_buffer[self.edit_cursor :]
+                )
+                self.edit_cursor += 1
+                return True
+
+            # Overwrite mode
+            if self.edit_cursor < len(self.edit_buffer):
+                self.edit_buffer = (
+                    self.edit_buffer[: self.edit_cursor]
+                    + typed
+                    + self.edit_buffer[self.edit_cursor + 1 :]
+                )
+                self.edit_cursor += 1
+                return True
+
+            if len(self.edit_buffer) < max_len:
+                self.edit_buffer += typed
+                self.edit_cursor += 1
+            return True
+
+        # Ignore unsupported keys while editing
+        return True
 
     def _render(self) -> None:
         self.stdscr.erase()
@@ -1499,17 +1849,26 @@ class TUIApp:
         
         # In CUSTOM mode, track which preview lines correspond to editable fields
         custom_field_lines = self._get_custom_field_line_mapping(lines) if self.mode == "CUSTOM" else {}
+
+        target_line_idx = None
+        target_field_value = ""
+        if self.mode == "CUSTOM" and 4 <= self.focus_index <= 11:
+            field_idx = self.focus_index - 4
+            target_field_value = self.config.get(self.custom_fields[field_idx][0], "") if self.config and field_idx < len(self.custom_fields) else ""
+            for line_idx, mapped_field_idx in custom_field_lines.items():
+                if mapped_field_idx == field_idx:
+                    target_line_idx = line_idx
+                    break
         
         for i, text in enumerate(lines):
             if i >= 400:
                 break
             
             # In CUSTOM mode, highlight the focused field's value (not the entire line)
-            if self.mode == "CUSTOM" and self.focus_index >= 4 and self.focus_index <= 11:
+            if self.mode == "CUSTOM" and self.focus_index >= 4 and self.focus_index <= 11 and i == target_line_idx:
                 field_idx = self.focus_index - 4
                 if field_idx < len(self.custom_fields):
-                    field_key, _, _ = self.custom_fields[field_idx]
-                    field_value = self.config.get(field_key, "") if self.config else ""
+                    field_value = target_field_value
                     
                     # Check if this line contains the field value
                     if field_value and field_value in text:
@@ -1560,18 +1919,34 @@ class TUIApp:
         """Map preview line numbers to custom field indices (0-7) for highlighting."""
         mapping: Dict[int, int] = {}
         cfg = self.config or self.last_good_config
+        used_lines = set()
         
         for field_idx, (key, label_msg_key, _) in enumerate(self.custom_fields):
             # Get the value of this field from config
             field_value = cfg.get(key, "") if cfg else ""
             if not field_value:
                 continue
-            
-            # Find the line containing the field value (with label or key)
+
+            label = self.msg.get(label_msg_key, key)
+            expected = f"{label} {field_value}"
+
+            # Prefer exact "label + value" match first.
             for line_idx, line in enumerate(lines):
-                if field_value in line:
+                if line_idx in used_lines:
+                    continue
+                if expected in line:
                     mapping[line_idx] = field_idx
+                    used_lines.add(line_idx)
                     break
+            else:
+                # Fallback: value-only match on an unused line.
+                for line_idx, line in enumerate(lines):
+                    if line_idx in used_lines:
+                        continue
+                    if field_value in line:
+                        mapping[line_idx] = field_idx
+                        used_lines.add(line_idx)
+                        break
         
         return mapping
 
@@ -1770,12 +2145,18 @@ class TUIApp:
             pass
 
     def _handle_key(self, ch: int) -> bool:
+        if not self.edit_field and ch in (ord("n"), ord("N")):
+            self._show_networks_dialog()
+            self.status = self.msg["status_ready"]
+            return True
+
         # ESC key: close dialog if open, or show exit confirmation
         if ch in (27,):
             if self.edit_field:
                 # Dialog is open: close it and discard changes
                 self.edit_field = None
                 self.edit_buffer = ""
+                self.edit_cursor = 0
                 self.dialog_error = ""
                 return True
             else:
@@ -1809,7 +2190,7 @@ class TUIApp:
         if ch in (curses.KEY_LEFT, curses.KEY_RIGHT):
             # Ignore LEFT/RIGHT when dialog is open (edit_field is set)
             if self.edit_field:
-                return True
+                return self._handle_edit_input(ch)
             
             self.status = self.msg["status_ready"]
             if self.focus_index == 0:
@@ -1904,7 +2285,8 @@ class TUIApp:
                 # Left panel: focus 2-3 port editing
                 elif self.focus_index in (2, 3):
                     self.edit_field = "ovpn" if self.focus_index == 2 else "wg"
-                    self.edit_buffer = ""
+                    self.edit_buffer = str(self.ovpn_start if self.focus_index == 2 else self.wg_start)
+                    self.edit_cursor = len(self.edit_buffer)
                     return True
                 # Left panel: focus 4 SAVE button (AUTO mode only)
                 elif self.focus_index == 4 and self.mode == "AUTO":
@@ -2008,6 +2390,7 @@ class TUIApp:
                         self.edit_buffer = self.config.get(field_key, "") or ""
                     else:
                         self.edit_buffer = ""
+                    self.edit_cursor = len(self.edit_buffer)
                     self.dialog_error = ""  # Clear error when starting new edit
                     return True
                 return True
@@ -2044,7 +2427,8 @@ class TUIApp:
                     return True
             if self.focus_index in (2, 3):
                 self.edit_field = "ovpn" if self.focus_index == 2 else "wg"
-                self.edit_buffer = ""
+                self.edit_buffer = str(self.ovpn_start if self.focus_index == 2 else self.wg_start)
+                self.edit_cursor = len(self.edit_buffer)
                 return True
             return True
 
@@ -2057,35 +2441,15 @@ class TUIApp:
         if self.focus_index in (2, 3):
             if ch in range(ord("0"), ord("9") + 1):
                 self.edit_field = "ovpn" if self.focus_index == 2 else "wg"
-                if len(self.edit_buffer) < 5:
-                    self.edit_buffer += chr(ch)
-                return True
-            if ch in (curses.KEY_BACKSPACE, 127, 8):
-                self.edit_buffer = self.edit_buffer[:-1]
+                self.edit_buffer = ""
+                self.edit_cursor = 0
+                return self._handle_edit_input(ch)
+            if ch in (curses.KEY_BACKSPACE, 127, 8, curses.KEY_DC):
                 return True
 
-        # Port number editing (both AUTO and CUSTOM modes)
-        # Handle port input when edit_field is "ovpn" or "wg"
-        if self.edit_field in ("ovpn", "wg"):
-            if ch in range(ord("0"), ord("9") + 1):
-                if len(self.edit_buffer) < 5:
-                    self.edit_buffer += chr(ch)
-                return True
-            if ch in (curses.KEY_BACKSPACE, 127, 8):
-                self.edit_buffer = self.edit_buffer[:-1]
-                return True
-            return True  # Ignore other keys during port editing
-
-        # CUSTOM mode: handle input for right panel editable fields
-        if self.mode == "CUSTOM" and 4 <= self.focus_index <= 11 and self.edit_field:
-            # Allow digits and dots for IP/CIDR fields
-            if ch in range(ord("0"), ord("9") + 1) or ch == ord(".") or ch == ord("/"):
-                if len(self.edit_buffer) < 20:
-                    self.edit_buffer += chr(ch)
-                return True
-            if ch in (curses.KEY_BACKSPACE, 127, 8):
-                self.edit_buffer = self.edit_buffer[:-1]
-                return True
+        # In-dialog editing for both port and CUSTOM fields.
+        if self.edit_field:
+            return self._handle_edit_input(ch)
 
         return True
 
@@ -2133,6 +2497,30 @@ class TUIApp:
             return True
         except ValueError:
             return False
+
+    def _get_aligned_network_cidr(self, cidr_str: str) -> str:
+        """Return canonical network CIDR for given input while preserving prefix.
+
+        Example:
+            192.168.180.0/20 -> 192.168.176.0/20
+        """
+        try:
+            cidr_str = cidr_str.strip()
+            net = IPv4Network(cidr_str, strict=False)
+            prefix = cidr_str.split("/")[1]
+            return f"{net.network_address}/{prefix}"
+        except Exception:
+            return ""
+
+    def _network_alignment_error(self, field_key: str, cidr_str: str) -> str:
+        """Build a user-friendly error for host-address CIDR input."""
+        suggested = self._get_aligned_network_cidr(cidr_str)
+        if suggested and suggested != cidr_str.strip():
+            return (
+                f"{field_key}: '{cidr_str}' is not a network address "
+                f"(host bits are set). Suggested: {suggested}"
+            )
+        return f"{field_key}: must use network address, not host address"
 
     def _is_private_ip(self, ip_str: str) -> bool:
         """Check if IP is in RFC1918 private range (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)."""
@@ -2215,7 +2603,7 @@ class TUIApp:
             if not self._is_valid_cidr(value):
                 return (False, f"{field_key}: invalid CIDR format (e.g., 172.16.0.0/24)")
             if not self._is_network_aligned(value):
-                return (False, f"{field_key}: must use network address, not host address")
+                return (False, self._network_alignment_error(field_key, value))
             if not self._is_private_ip(value.split('/')[0]):
                 return (False, f"{field_key}: must be private IP range")
             is_ok, err = self._validate_cidr_conflicts(field_key, value, cfg)
@@ -2227,7 +2615,7 @@ class TUIApp:
             if not self._is_valid_cidr(value):
                 return (False, f"{field_key}: invalid CIDR format (e.g., 192.168.80.0/24)")
             if not self._is_network_aligned(value):
-                return (False, f"{field_key}: must use network address, not host address")
+                return (False, self._network_alignment_error(field_key, value))
             if not self._is_private_ip(value.split('/')[0]):
                 return (False, f"{field_key}: must be private IP range")
             try:
@@ -2245,7 +2633,7 @@ class TUIApp:
             if not self._is_valid_cidr(value):
                 return (False, f"{field_key}: invalid CIDR format (e.g., 192.168.81.0/24)")
             if not self._is_network_aligned(value):
-                return (False, f"{field_key}: must use network address, not host address")
+                return (False, self._network_alignment_error(field_key, value))
             if not self._is_private_ip(value.split('/')[0]):
                 return (False, f"{field_key}: must be private IP range")
             is_ok, err = self._validate_cidr_conflicts(field_key, value, cfg)
@@ -2338,6 +2726,7 @@ class TUIApp:
                         self.status = f"{self.msg['status_error']}{error_msg}"
             self.edit_field = None
             self.edit_buffer = ""
+            self.edit_cursor = 0
             return
         
         # AUTO mode: save port value
@@ -2360,6 +2749,7 @@ class TUIApp:
                 self.status = self.msg["status_ready"]
         self.edit_field = None
         self.edit_buffer = ""
+        self.edit_cursor = 0
 
     def _exec_custom(self) -> None:
         try:
