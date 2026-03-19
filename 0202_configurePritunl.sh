@@ -164,6 +164,9 @@ configure_mongodb "${PT_IG_IP}"
 # Configure Pritunl initial setup
 configure_pritunl_initial "${PT_IG_IP}"
 
+# Configure SELinux UDP port labeling and bind policy
+configure_selinux_port_settings "${PT_IG_IP}"
+
 # Configure system settings
 configure_system_settings "${PT_IG_IP}"
 

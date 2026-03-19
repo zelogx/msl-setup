@@ -101,6 +101,9 @@ dnf -y update
 yum -y swap openvpn pritunl-openvpn || true
 yum -y --allowerasing install pritunl-openvpn
 dnf -y install pritunl pritunl-openvpn wireguard-tools mongodb-org
+# yum -y swap openvpn pritunl-openvpn-2.6.17-1.el9.almalinux || true
+# yum -y --allowerasing install pritunl-openvpn-2.6.17-1.el9.almalinux
+# dnf -y install pritunl wireguard-tools mongodb-org
 EOF
     then
         local exit_code=$?
@@ -269,6 +272,103 @@ systemctl restart sshd
 EOF
     
     log_info "Security hardening completed"
+}
+
+################################################################################
+# Function: configure_selinux_port_settings
+# Description: Configure SELinux UDP port labels and bind policy for Pritunl
+#
+# Parameters:
+#   $1 - Pritunl VM IP address
+#
+# Main commands/functions used:
+#   - dnf: Install SELinux policy build dependencies
+#   - scp/ssh: Transfer and execute remote helper script
+#   - checkmodule/semodule_package/semodule: Build and install custom policy module
+################################################################################
+configure_selinux_port_settings() {
+    local vm_ip="$1"
+    local local_script_path="${PROJECT_ROOT}/scripts/msl_pritunl_selinux_port.sh"
+
+    log_info "Configuring SELinux port settings on ${vm_ip}..." -c
+
+    if [[ -z "${PF_ST_OV:-}" || -z "${PF_ED_OV:-}" || -z "${PF_ST_WG:-}" || -z "${PF_ED_WG:-}" ]]; then
+        die "Port range variables are not set (.env: PF_ST_OV/PF_ED_OV/PF_ST_WG/PF_ED_WG)"
+    fi
+
+    if [[ ! -f "${local_script_path}" ]]; then
+        die "SELinux port helper script not found: ${local_script_path}"
+    fi
+
+    log_info "Step 1/4: Installing SELinux policy dependencies on VM..." -c
+    if ! ssh "root@${vm_ip}" "dnf install -y policycoreutils-python-utils checkpolicy policycoreutils-devel"; then
+        die "Failed to install SELinux policy dependencies on VM"
+    fi
+    log_info "Step 1/4 completed" -c
+
+    log_info "Step 2/4: Transferring SELinux port helper script to VM..." -c
+    if ! scp "${local_script_path}" "root@${vm_ip}:/root/msl_pritunl_selinux_port.sh"; then
+        die "Failed to transfer msl_pritunl_selinux_port.sh to VM"
+    fi
+    log_info "Step 2/4 completed" -c
+
+    log_info "Step 3/4: Applying SELinux UDP port labels (OpenVPN ${PF_ST_OV}-${PF_ED_OV}, WireGuard ${PF_ST_WG}-${PF_ED_WG})..." -c
+    if ! ssh "root@${vm_ip}" bash -s -- "${PF_ST_OV}" "${PF_ED_OV}" "${PF_ST_WG}" "${PF_ED_WG}" <<'EOF'
+set -euo pipefail
+
+pf_st_ov="$1"
+pf_ed_ov="$2"
+pf_st_wg="$3"
+pf_ed_wg="$4"
+
+chmod +x /root/msl_pritunl_selinux_port.sh
+cd /root
+
+for port in $(seq "$pf_st_ov" "$pf_ed_ov"); do
+    ./msl_pritunl_selinux_port.sh udp "$port"
+done
+
+for port in $(seq "$pf_st_wg" "$pf_ed_wg"); do
+    ./msl_pritunl_selinux_port.sh udp "$port"
+done
+EOF
+    then
+        die "Failed to apply SELinux UDP port labels"
+    fi
+    log_info "Step 3/4 completed" -c
+
+    log_info "Step 4/4: Installing custom SELinux policy module for pritunl_t -> openvpn_port_t udp bind..." -c
+    if ! ssh "root@${vm_ip}" bash <<'EOF'
+set -euo pipefail
+
+cat > /root/pritunl_bind_openvpn_ports.te <<'TEEOF'
+module pritunl_bind_openvpn_ports 1.0;
+
+require {
+    type pritunl_t;
+    type openvpn_port_t;
+    class udp_socket name_bind;
+}
+
+allow pritunl_t openvpn_port_t:udp_socket name_bind;
+TEEOF
+
+checkmodule -M -m -o /root/pritunl_bind_openvpn_ports.mod /root/pritunl_bind_openvpn_ports.te
+semodule_package -o /root/pritunl_bind_openvpn_ports.pp -m /root/pritunl_bind_openvpn_ports.mod
+semodule -i /root/pritunl_bind_openvpn_ports.pp
+
+# Clean up generated policy artifacts and temporary work directory
+rm -rf /root/msl-selinux-work
+rm -f /root/pritunl_bind_openvpn_ports.mod
+rm -f /root/pritunl_bind_openvpn_ports.pp
+rm -f /root/pritunl_bind_openvpn_ports.te
+EOF
+    then
+        die "Failed to install custom SELinux policy module"
+    fi
+    log_info "Step 4/4 completed" -c
+
+    log_info "SELinux port settings configured" -c
 }
 
 ################################################################################
