@@ -1,0 +1,1449 @@
+#!/bin/bash
+################################################################################
+# Zelogx™ Multi-Project Secure Lab Setup
+#
+# © 2025 Zelogx. Zelogx™ and the Zelogx logo are trademarks
+# of the Zelogx Project. All other marks are property of their respective owners.
+#
+# Filename: mslcm
+# Purpose: Cluster management command for VXLAN GW backend operations.
+#
+# Main functions/commands used:
+#   - enable-cluster: Promote the current node to initial cluster backend node.
+#   - add-node: Add a cluster node to keepalived and VXLAN peers.
+#   - del-node: Remove a cluster node from keepalived and VXLAN peers.
+#   - disable-cluster: Revert enable-cluster changes on local node.
+#   - enable-vpn-ha: Placeholder entry point for v2.0-c workflow.
+#
+# Dependencies:
+#   - bash, pvesh, pvecm, jq, ip, ipcalc, ssh, scp, keepalived, arping
+#
+# Usage:
+#   ./mslcm enable-cluster
+#   ./mslcm add-node [node-ip]
+#   ./mslcm del-node [node-ip]
+#   ./mslcm disable-cluster
+#   ./mslcm enable-vpn-ha
+#
+# Notes:
+#   - This script is standalone and does not source lib/*.sh.
+#   - Logs are emitted to console only.
+################################################################################
+
+set -euo pipefail
+
+STATE_DIR="/etc/pve/mslsetup"
+SHARED_ENV="${STATE_DIR}/.env"
+CLUSTER_ENV="${STATE_DIR}/cluster.env"
+KEEPALIVED_CONF="/etc/keepalived/keepalived.conf"
+HOOK_PATH="/usr/local/bin/msl-vip-hook.sh"
+SSH_OPTS=(
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+    -o BatchMode=yes
+    -o LogLevel=ERROR
+)
+
+################################################################################
+# Function: log_info
+# Description: Print info log message to stdout.
+#
+# Main commands/functions used:
+#   - printf: Print formatted output
+################################################################################
+log_info() {
+    printf '[INFO] %s\n' "$*"
+}
+
+################################################################################
+# Function: log_warn
+# Description: Print warning message to stdout.
+#
+# Main commands/functions used:
+#   - printf: Print formatted output
+################################################################################
+log_warn() {
+    printf '[WARN] %s\n' "$*" >&2
+}
+
+################################################################################
+# Function: log_error
+# Description: Print error message to stderr.
+#
+# Main commands/functions used:
+#   - printf: Print formatted output
+################################################################################
+log_error() {
+    printf '[ERROR] %s\n' "$*" >&2
+}
+
+################################################################################
+# Function: require_root
+# Description: Exit when script is not executed as root.
+#
+# Main commands/functions used:
+#   - id: Check current user id
+################################################################################
+require_root() {
+    if [[ "$(id -u)" -ne 0 ]]; then
+        log_error "Run this command as root."
+        exit 1
+    fi
+}
+
+################################################################################
+# Function: require_cmd
+# Description: Ensure required command exists.
+#
+# Main commands/functions used:
+#   - command: Check executable availability
+################################################################################
+require_cmd() {
+    local cmd="$1"
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        log_error "Required command not found: $cmd"
+        exit 1
+    fi
+}
+
+################################################################################
+# Function: check_cluster_state
+# Description: Validate that the current host is in cluster state.
+#
+# Main commands/functions used:
+#   - pvecm status: Query cluster status
+#   - grep: Detect node lines beginning with 0x
+################################################################################
+check_cluster_state() {
+    if ! pvecm status 2>&1| grep -q '^0x'; then
+        log_info "Proxmox cluster has not been created on this node yet."
+        log_info "'mslcm enable-cluster' can only be used after creating a cluster."
+        log_info "After the cluster is created, run this command again on the initial node."
+        exit 1
+    fi
+}
+
+################################################################################
+# Function: ensure_shared_env
+# Description: Ensure /etc/pve/mslsetup/.env exists and load it.
+#
+# Main commands/functions used:
+#   - test/source: Validate and load shared env file
+#   - source: Load environment variables
+################################################################################
+ensure_shared_env() {
+    mkdir -p "$STATE_DIR"
+
+    if [[ ! -f "$SHARED_ENV" ]]; then
+        log_error "$SHARED_ENV not found. Run 0103_clusterSetup.sh to provision shared env first."
+        exit 1
+    fi
+
+    # shellcheck disable=SC1090
+    source "$SHARED_ENV"
+
+    local required=(NUM_PJ ML_CIDR ML_GW PVE_IP)
+    local v
+    for v in "${required[@]}"; do
+        if [[ -z "${!v:-}" ]]; then
+            log_error "Missing required variable in .env: $v"
+            exit 1
+        fi
+    done
+}
+
+################################################################################
+# Function: ipv4_to_int
+# Description: Convert dotted IPv4 string to integer.
+#
+# Main commands/functions used:
+#   - bash arithmetic: Convert octets to 32-bit integer
+################################################################################
+ipv4_to_int() {
+    local ip="$1"
+    local a b c d
+    IFS='.' read -r a b c d <<< "$ip"
+    printf '%u\n' "$(( (a << 24) + (b << 16) + (c << 8) + d ))"
+}
+
+################################################################################
+# Function: ip_in_cidr
+# Description: Validate if an IP belongs to a CIDR network.
+#
+# Main commands/functions used:
+#   - ipcalc: Resolve network/broadcast
+#   - bash arithmetic: Compare integer ranges
+################################################################################
+ip_in_cidr() {
+    local ip="$1"
+    local cidr="$2"
+    local network broadcast calc_out
+
+    calc_out="$(ipcalc "$cidr" 2>/dev/null || true)"
+    network="$(printf '%s\n' "$calc_out" | awk '/^Network:/ {print $2; exit}' | cut -d/ -f1)"
+    broadcast="$(printf '%s\n' "$calc_out" | awk '/^Broadcast:/ {print $2; exit}')"
+
+    if [[ -z "$network" || -z "$broadcast" ]]; then
+        network="$(ipcalc -n "$cidr" 2>/dev/null | awk -F= '/NETWORK/ {print $2; exit}' | cut -d/ -f1)"
+        broadcast="$(ipcalc -b "$cidr" 2>/dev/null | awk -F= '/BROADCAST/ {print $2; exit}')"
+    fi
+
+    if [[ -z "$network" || -z "$broadcast" ]]; then
+        log_error "Failed to resolve network/broadcast from CIDR: $cidr"
+        return 1
+    fi
+
+    local ip_i net_i brd_i
+    ip_i="$(ipv4_to_int "$ip")"
+    net_i="$(ipv4_to_int "$network")"
+    brd_i="$(ipv4_to_int "$broadcast")"
+
+    [[ "$ip_i" -gt "$net_i" && "$ip_i" -lt "$brd_i" ]]
+}
+
+################################################################################
+# Function: detect_main_interface
+# Description: Detect main bridge interface based on PVE_IP.
+#
+# Main commands/functions used:
+#   - ip: Enumerate IPv4 interfaces
+#   - awk: Match interface by address
+################################################################################
+detect_main_interface() {
+    local matches
+    matches="$(ip -o -4 addr show | awk -v ip="$PVE_IP" '$4 ~ ("^" ip "/") {print $2}')"
+
+    if [[ -z "$matches" ]]; then
+        log_error "Unable to detect main interface from PVE_IP=$PVE_IP"
+        exit 1
+    fi
+
+    local count
+    count="$(printf '%s\n' "$matches" | wc -l)"
+    if [[ "$count" -eq 1 ]]; then
+        printf '%s\n' "$matches"
+        return 0
+    fi
+
+    log_warn "Multiple interfaces match PVE_IP. Select one interface."
+    local idx=1
+    local arr=()
+    while IFS= read -r line; do
+        arr+=("$line")
+        printf '  %d) %s\n' "$idx" "$line"
+        idx=$((idx + 1))
+    done <<< "$matches"
+
+    local sel
+    while true; do
+        read -r -p "Select interface number: " sel
+        if [[ "$sel" =~ ^[0-9]+$ ]] && (( sel >= 1 && sel <= ${#arr[@]} )); then
+            printf '%s\n' "${arr[$((sel-1))]}"
+            return 0
+        fi
+        log_warn "Invalid selection."
+    done
+}
+
+################################################################################
+# Function: choose_target_node
+# Description: Determine add-node target IP by argument or interactive select.
+#
+# Main commands/functions used:
+#   - pvecm status: Enumerate cluster members
+#   - awk: Extract node IPs and remove local entry
+################################################################################
+choose_target_node() {
+    local input_ip="${1:-}"
+    if [[ -n "$input_ip" ]]; then
+        printf '%s\n' "$input_ip"
+        return 0
+    fi
+
+    mapfile -t candidates < <(pvecm status | awk '/^0x/ && $0 !~ /\(local\)/ {print $3}')
+
+    if [[ "${#candidates[@]}" -eq 0 ]]; then
+        log_error "No non-local cluster member found in pvecm status output."
+        exit 1
+    fi
+
+    if [[ "${#candidates[@]}" -eq 1 ]]; then
+        printf '%s\n' "${candidates[0]}"
+        return 0
+    fi
+
+    log_info "Select target node IP:"
+    local i=1
+    for ip in "${candidates[@]}"; do
+        printf '  %d) %s\n' "$i" "$ip"
+        i=$((i + 1))
+    done
+
+    local sel
+    while true; do
+        read -r -p "Enter number: " sel
+        if [[ "$sel" =~ ^[0-9]+$ ]] && (( sel >= 1 && sel <= ${#candidates[@]} )); then
+            printf '%s\n' "${candidates[$((sel-1))]}"
+            return 0
+        fi
+        log_warn "Invalid selection."
+    done
+}
+
+################################################################################
+# Function: assert_target_is_cluster_member
+# Description: Ensure target IP exists in current cluster membership and is not local.
+#
+# Main commands/functions used:
+#   - pvecm status: Read cluster member list
+#   - awk/grep: Validate target membership and local flag
+################################################################################
+assert_target_is_cluster_member() {
+    local target_ip="$1"
+
+    if ! pvecm status | awk '/^0x/ {print $3}' | grep -Fxq "$target_ip"; then
+        log_error "Target node(${target_ip}) is not a current cluster member."
+        log_error "Join the node to cluster first (pvecm add), then run add-node."
+        exit 1
+    fi
+
+    if pvecm status | awk '/^0x/ && /\(local\)/ {print $3}' | grep -Fxq "$target_ip"; then
+        log_error "Target IP is the local node. Specify a non-local cluster member."
+        exit 1
+    fi
+}
+
+################################################################################
+# Function: calc_priority_from_nodeid
+# Description: Calculate keepalived priority from target nodeid in pvecm status.
+#
+# Main commands/functions used:
+#   - pvecm status: Read member nodeid and IP mapping
+#   - awk: Extract hex nodeid for target IP
+#   - bash arithmetic: Compute priority formula
+################################################################################
+calc_priority_from_nodeid() {
+    local target_ip="$1"
+    local nodeid_hex nodeid_dec priority
+
+    nodeid_hex="$(pvecm status | awk -v ip="$target_ip" '/^0x/ && $3==ip {print $1; exit}')"
+    if [[ -z "$nodeid_hex" ]]; then
+        log_error "Failed to resolve nodeid from pvecm status for target IP: $target_ip"
+        exit 1
+    fi
+
+    nodeid_dec=$((16#${nodeid_hex#0x}))
+    priority=$((100 - (nodeid_dec - 1) * 20))
+
+    if (( priority < 1 )); then
+        log_warn "Calculated priority ${priority} is below 1; clamping to 1"
+        priority=1
+    fi
+
+    printf '%s\n' "$priority"
+}
+
+################################################################################
+# Function: ensure_vxlan_peers_ipset
+# Description: Ensure datacenter IPSet vxlan_peers exists.
+#
+# Main commands/functions used:
+#   - pvesh get/create: Read/create datacenter IPSet
+#   - jq: Parse IPSet list JSON
+################################################################################
+ensure_vxlan_peers_ipset() {
+    local exists
+    exists="$(pvesh get /cluster/firewall/ipset --output-format json 2>/dev/null | jq -r '.[] | select(.name=="vxlan_peers") | .name' | head -n1)"
+    if [[ "$exists" == "vxlan_peers" ]]; then
+        log_info "IPSet vxlan_peers already exists."
+        return 0
+    fi
+
+    pvesh create /cluster/firewall/ipset \
+        -name vxlan_peers \
+        -comment "MSLSetup Cluster VXLAN peer nodes" >/dev/null
+    log_info "Created IPSet vxlan_peers"
+}
+
+################################################################################
+# Function: ensure_vxlan_peer_entry
+# Description: Ensure target node IP exists in vxlan_peers IPSet.
+#
+# Main commands/functions used:
+#   - pvesh get/create: Read/create IPSet entries
+#   - jq: Parse IPSet entry JSON
+################################################################################
+ensure_vxlan_peer_entry() {
+    local peer_ip="$1"
+    local peer_cidr="${peer_ip}/32"
+    local exists
+
+    exists="$(pvesh get /cluster/firewall/ipset/vxlan_peers --output-format json 2>/dev/null | jq -r --arg ip "$peer_ip" --arg c "$peer_cidr" '.[] | select(.cidr==$ip or .cidr==$c) | .cidr' | head -n1)"
+    if [[ -n "$exists" ]]; then
+        log_info "IPSet vxlan_peers already contains ${exists}"
+        return 0
+    fi
+
+    pvesh create /cluster/firewall/ipset/vxlan_peers \
+        -cidr "$peer_cidr" \
+        -comment "MSLSetup VXLAN peer ${peer_ip}" >/dev/null
+    log_info "Added ${peer_cidr} to IPSet vxlan_peers"
+}
+
+################################################################################
+# Function: ensure_vxlan_peers_fw_rule
+# Description: Ensure datacenter IN rule for VXLAN UDP/4789 between vxlan peers.
+#
+# Main commands/functions used:
+#   - pvesh get/create: Read/create datacenter firewall rules
+#   - jq: Parse firewall rules JSON
+################################################################################
+ensure_vxlan_peers_fw_rule() {
+    local rule_comment="MSLSetup VXLAN UDP/4789 Between VXLAN Peers"
+    local pos
+
+    pos="$(pvesh get /cluster/firewall/rules --output-format json 2>/dev/null | jq -r --arg c "$rule_comment" '.[] | select(.comment==$c) | .pos' | head -n1)"
+    if [[ -n "$pos" ]]; then
+        log_info "Datacenter FW rule already exists: ${rule_comment}"
+        return 0
+    fi
+
+    pvesh create /cluster/firewall/rules \
+        -action ACCEPT \
+        -type in \
+        -source "+dc/vxlan_peers" \
+        -dest "+dc/vxlan_peers" \
+        -proto udp \
+        -dport 4789 \
+        -enable 1 \
+        -comment "$rule_comment" >/dev/null
+    log_info "Created datacenter FW rule for VXLAN UDP/4789 between vxlan_peers"
+}
+
+################################################################################
+# Function: ensure_vrrp_peers_fw_rule
+# Description: Ensure datacenter IN rule for VRRP between vxlan peers.
+#
+# Main commands/functions used:
+#   - pvesh get/create: Read/create datacenter firewall rules
+#   - jq: Parse firewall rules JSON
+################################################################################
+ensure_vrrp_peers_fw_rule() {
+    local rule_comment="MSLSetup VRRP Between VXLAN Peers"
+    local pos
+
+    pos="$(pvesh get /cluster/firewall/rules --output-format json 2>/dev/null | jq -r --arg c "$rule_comment" '.[] | select(.comment==$c) | .pos' | head -n1)"
+    if [[ -n "$pos" ]]; then
+        log_info "Datacenter FW rule already exists: ${rule_comment}"
+        return 0
+    fi
+
+    pvesh create /cluster/firewall/rules \
+        -action ACCEPT \
+        -type in \
+        -source "+dc/vxlan_peers" \
+        -dest "224.0.0.18" \
+        -proto vrrp \
+        -enable 1 \
+        -comment "$rule_comment" >/dev/null
+    log_info "Created datacenter FW rule for VRRP between vxlan_peers"
+}
+
+################################################################################
+# Function: remove_vxlan_peer_entry
+# Description: Remove target node IP from vxlan_peers IPSet if present.
+#
+# Main commands/functions used:
+#   - pvesh get/delete: Read/delete IPSet entries
+#   - jq: Parse IPSet entry JSON
+################################################################################
+remove_vxlan_peer_entry() {
+    local peer_ip="$1"
+    local peer_cidr="${peer_ip}/32"
+    local exists cidr_encoded
+
+    # vxlan_peers may already be removed on repeated del-node runs; treat as empty.
+    exists="$(pvesh get /cluster/firewall/ipset/vxlan_peers --output-format json 2>/dev/null | jq -r --arg ip "$peer_ip" --arg c "$peer_cidr" '.[] | select(.cidr==$ip or .cidr==$c) | .cidr' | head -n1 || true)"
+    if [[ -z "$exists" ]]; then
+        log_info "IPSet vxlan_peers does not contain ${peer_ip} or ${peer_cidr}; skipping delete"
+        return 0
+    fi
+
+    cidr_encoded="${exists//\//%2F}"
+    pvesh delete "/cluster/firewall/ipset/vxlan_peers/${cidr_encoded}" >/dev/null
+    log_info "Removed ${exists} from IPSet vxlan_peers"
+}
+
+################################################################################
+# Function: cleanup_vxlan_peers_ipset_if_empty
+# Description: Delete vxlan_peers IPSet when no entries remain.
+#
+# Main commands/functions used:
+#   - pvesh get/delete: Read/delete IPSet
+#   - jq: Count IPSet entries
+################################################################################
+cleanup_vxlan_peers_ipset_if_empty() {
+    local count
+    count="$(pvesh get /cluster/firewall/ipset/vxlan_peers --output-format json 2>/dev/null | jq 'length' 2>/dev/null || echo 0)"
+    if [[ "$count" -eq 0 ]]; then
+        pvesh delete /cluster/firewall/ipset/vxlan_peers >/dev/null 2>&1 || true
+        log_info "Deleted empty IPSet vxlan_peers"
+    fi
+}
+
+################################################################################
+# Function: remove_backup_entry_from_cluster_env
+# Description: Remove BACKUP entry for target node IP from cluster.env.
+#
+# Main commands/functions used:
+#   - awk: Filter out matching BACKUP line
+#   - mv: Atomically replace cluster.env
+################################################################################
+remove_backup_entry_from_cluster_env() {
+    local target_ip="$1"
+    local target_line="BACKUP=${target_ip}"
+    local tmp_file
+
+    if [[ ! -f "$CLUSTER_ENV" ]]; then
+        log_info "cluster.env not found; skipping BACKUP entry cleanup for ${target_ip}"
+        return 0
+    fi
+
+    if ! grep -Fxq "$target_line" "$CLUSTER_ENV"; then
+        log_info "cluster.env does not contain BACKUP entry for ${target_ip}; skipping"
+        return 0
+    fi
+
+    tmp_file="$(mktemp "${STATE_DIR}/.cluster.env.tmp.XXXXXX")"
+    awk -v line="$target_line" '$0 != line { print }' "$CLUSTER_ENV" > "$tmp_file"
+    mv "$tmp_file" "$CLUSTER_ENV"
+    log_info "Removed BACKUP entry from cluster.env: ${target_ip}"
+}
+
+################################################################################
+# Function: remove_vxlan_peers_fw_rule
+# Description: Remove datacenter IN rule for VXLAN UDP/4789 between vxlan peers.
+#
+# Main commands/functions used:
+#   - pvesh get/delete: Read/delete datacenter firewall rule
+#   - jq: Parse firewall rules JSON
+################################################################################
+remove_vxlan_peers_fw_rule() {
+    local rule_comment="MSLSetup VXLAN UDP/4789 Between VXLAN Peers"
+    local pos
+
+    pos="$(pvesh get /cluster/firewall/rules --output-format json 2>/dev/null | jq -r --arg c "$rule_comment" '.[] | select(.comment==$c) | .pos' | head -n1)"
+    if [[ -z "$pos" ]]; then
+        log_info "Datacenter FW rule not found: ${rule_comment}; skipping delete"
+        return 0
+    fi
+
+    pvesh delete "/cluster/firewall/rules/${pos}" >/dev/null
+    log_info "Removed datacenter FW rule: ${rule_comment}"
+}
+
+################################################################################
+# Function: remove_vrrp_peers_fw_rule
+# Description: Remove datacenter IN rule for VRRP between vxlan peers.
+#
+# Main commands/functions used:
+#   - pvesh get/delete: Read/delete datacenter firewall rule
+#   - jq: Parse firewall rules JSON
+################################################################################
+remove_vrrp_peers_fw_rule() {
+    local rule_comment="MSLSetup VRRP Between VXLAN Peers"
+    local pos
+
+    pos="$(pvesh get /cluster/firewall/rules --output-format json 2>/dev/null | jq -r --arg c "$rule_comment" '.[] | select(.comment==$c) | .pos' | head -n1)"
+    if [[ -z "$pos" ]]; then
+        log_info "Datacenter FW rule not found: ${rule_comment}; skipping delete"
+        return 0
+    fi
+
+    pvesh delete "/cluster/firewall/rules/${pos}" >/dev/null
+    log_info "Removed datacenter FW rule: ${rule_comment}"
+}
+
+################################################################################
+# Function: remove_zone_peers
+# Description: Remove target node IP from vpndmz and all devpjXX zone peer lists.
+#
+# Main commands/functions used:
+#   - pvesh/jq: Read/update SDN zone peers
+################################################################################
+remove_zone_peers() {
+    local node_ip="$1"
+    local json peers new_peers
+
+    # Remove from vpndmz zone peers first
+    json="$(pvesh get "/cluster/sdn/zones/vpndmz" --output-format json 2>/dev/null || true)"
+    if [[ -n "$json" ]]; then
+        peers="$(printf '%s' "$json" | jq -r '.peers // ""')"
+        if printf ',%s,' "$peers" | grep -q ",${node_ip},"; then
+            new_peers="$(printf '%s' "$peers" | tr ',' '\n' | sed '/^$/d' | awk -v n="$node_ip" '$0!=n' | awk '!seen[$0]++' | paste -sd ',' -)"
+            pvesh set "/cluster/sdn/zones/vpndmz" -peers "$new_peers" >/dev/null
+            log_info "Zone vpndmz: removed peer ${node_ip} -> ${new_peers}"
+        else
+            log_info "Zone vpndmz: peer ${node_ip} not present; skipping"
+        fi
+    else
+        log_warn "Zone vpndmz not found; skipping peer removal"
+    fi
+
+    for i in $(seq 1 "$NUM_PJ"); do
+        local idx zone
+        idx=$(printf '%02d' "$i")
+        zone="devpj${idx}"
+
+        json="$(pvesh get "/cluster/sdn/zones/${zone}" --output-format json 2>/dev/null || true)"
+        [[ -n "$json" ]] || continue
+
+        peers="$(printf '%s' "$json" | jq -r '.peers // ""')"
+        if [[ -z "$peers" ]]; then
+            continue
+        fi
+
+        if ! printf ',%s,' "$peers" | grep -q ",${node_ip},"; then
+            continue
+        fi
+
+        new_peers="$(printf '%s' "$peers" | tr ',' '\n' | sed '/^$/d' | awk -v n="$node_ip" '$0!=n' | awk '!seen[$0]++' | paste -sd ',' -)"
+        pvesh set "/cluster/sdn/zones/${zone}" -peers "$new_peers" >/dev/null
+        log_info "Zone ${zone}: removed peer ${node_ip} -> ${new_peers}"
+    done
+
+    pvesh set /cluster/sdn >/dev/null
+    log_info "SDN apply completed after peer removals."
+}
+
+################################################################################
+# Function: restore_local_gateway_backend
+# Description: Remove cluster-mode no-op patch from mslsetup-vxlan-gw hooks.
+#
+# Main commands/functions used:
+#   - awk: Remove injected marker + immediate exit 0 lines
+################################################################################
+restore_local_gateway_backend() {
+    local hook
+    local tmp
+    local marker="# mslcm-cluster-disable-vnetpj"
+
+    for hook in /etc/network/if-up.d/mslsetup-vxlan-gw /etc/network/if-down.d/mslsetup-vxlan-gw; do
+        [[ -f "$hook" ]] || continue
+
+        if ! grep -Fq "$marker" "$hook"; then
+            continue
+        fi
+
+        tmp="${hook}.tmp"
+        awk -v m="$marker" '
+            skip_next_exit == 1 {
+                if ($0 ~ /^exit 0$/) {
+                    skip_next_exit=0
+                    next
+                }
+                skip_next_exit=0
+            }
+            $0 == m {
+                skip_next_exit=1
+                next
+            }
+            { print }
+        ' "$hook" > "$tmp"
+        mv "$tmp" "$hook"
+        chmod 0755 "$hook"
+    done
+
+    if command -v ifreload >/dev/null 2>&1; then
+        ifreload -a
+    fi
+
+    log_info "Restored local mslsetup-vxlan-gw hooks by removing cluster no-op patch"
+}
+
+################################################################################
+# Function: ensure_packages_local
+# Description: Install keepalived and arping if missing on local node.
+#
+# Main commands/functions used:
+#   - apt-get: Install packages
+#   - command: Check executable presence
+################################################################################
+ensure_packages_local() {
+    if command -v keepalived >/dev/null 2>&1 && command -v arping >/dev/null 2>&1; then
+        return 0
+    fi
+    log_info "Installing keepalived and arping on local node..."
+    apt-get update -y >/dev/null 2>&1
+    apt-get install -y keepalived arping >/dev/null 2>&1
+}
+
+################################################################################
+# Function: remove_packages_local
+# Description: Remove keepalived stack and unused related dependencies locally.
+#
+# Main commands/functions used:
+#   - apt-get: Purge packages and autoremove orphaned dependencies
+################################################################################
+remove_packages_local() {
+    log_info "Removing keepalived and arping on local node..."
+    DEBIAN_FRONTEND=noninteractive apt-get purge -y keepalived arping >/dev/null 2>&1 \
+        || DEBIAN_FRONTEND=noninteractive apt-get remove -y keepalived arping >/dev/null 2>&1 \
+        || true
+
+    # Remove dependencies that became unnecessary after keepalived purge.
+    DEBIAN_FRONTEND=noninteractive apt-get autoremove -y --purge >/dev/null 2>&1 || true
+}
+
+################################################################################
+# Function: write_cluster_env
+# Description: Persist cluster runtime variables used by vip hook.
+#
+# Main commands/functions used:
+#   - cat: Generate env file
+################################################################################
+write_cluster_env() {
+    local main_if="$1"
+    local vip_cidr="$2"
+    local vrid="$3"
+    local auth_pass="$4"
+
+    cat > "$CLUSTER_ENV" <<EOF
+MAIN_IF=${main_if}
+MAIN_VIP=${vip_cidr}
+VRID=${vrid}
+AUTH_PASS=${auth_pass}
+EOF
+}
+
+################################################################################
+# Function: render_keepalived_conf
+# Description: Render keepalived.conf with required template values.
+#
+# Main commands/functions used:
+#   - cat: Write keepalived configuration
+################################################################################
+render_keepalived_conf() {
+    local main_if="$1"
+    local vip_cidr="$2"
+    local priority="$3"
+    local vrid="$4"
+    local auth_pass="$5"
+
+    cat > "$KEEPALIVED_CONF" <<EOF
+global_defs {
+    enable_script_security
+    script_user root
+}
+
+vrrp_script check_gw_reachability {
+    script "/usr/bin/ping -c 1 -W 1 ${ML_GW}"
+    interval 2
+    weight -20
+    fall 2
+    rise 2
+}
+
+vrrp_instance VI_1 {
+    state BACKUP
+    interface ${main_if}
+    virtual_router_id ${vrid}
+    priority ${priority}
+    advert_int 1
+    nopreempt
+
+    authentication {
+        auth_type PASS
+        auth_pass ${auth_pass}
+    }
+
+    virtual_ipaddress {
+        ${vip_cidr} dev ${main_if}
+    }
+
+    track_script {
+        check_gw_reachability
+    }
+
+    notify_master "${HOOK_PATH} master"
+    notify_backup "${HOOK_PATH} backup"
+    notify_stop   "${HOOK_PATH} stop"
+    notify_fault  "${HOOK_PATH} fault"
+}
+EOF
+    chmod 600 "$KEEPALIVED_CONF"
+}
+
+################################################################################
+# Function: create_vip_hook
+# Description: Create msl-vip-hook script with NUM_PJ loop and GARP cycles.
+#
+# Main commands/functions used:
+#   - cat: Generate hook script
+#   - ip/arping/logger: Address and GARP handling
+################################################################################
+create_vip_hook() {
+    cat > "$HOOK_PATH" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+
+ACTION="${1:-}"
+ENV_SHARED="/etc/pve/mslsetup/.env"
+ENV_CLUSTER="/etc/pve/mslsetup/cluster.env"
+
+log() {
+    logger -t msl-keepalived "$*"
+}
+
+if [[ ! -f "$ENV_SHARED" || ! -f "$ENV_CLUSTER" ]]; then
+    log "Missing env file: $ENV_SHARED or $ENV_CLUSTER"
+    exit 1
+fi
+
+# shellcheck disable=SC1090
+source "$ENV_SHARED"
+# shellcheck disable=SC1090
+source "$ENV_CLUSTER"
+
+if [[ -z "${NUM_PJ:-}" || -z "${MAIN_IF:-}" || -z "${MAIN_VIP:-}" ]]; then
+    log "Missing required values in env files"
+    exit 1
+fi
+
+all_ifaces() {
+    ip -o link show | awk -F': ' '{print $2}' | cut -d'@' -f1 | grep -v '^lo$'
+}
+
+garp_cycle() {
+    local target_ip="$1"
+    while IFS= read -r iface; do
+        arping -U -c 1 -I "$iface" "$target_ip" >/dev/null 2>&1 &
+    done < <(all_ifaces)
+}
+
+main_vip_ip="${MAIN_VIP%%/*}"
+vpndmz_prefix="${VPNDMZ_CIDR#*/}"
+
+case "$ACTION" in
+    master)
+        log "notify_master start"
+        if [[ -n "${VPNDMZ_GW:-}" && -n "${VPNDMZ_CIDR:-}" && "${VPNDMZ_CIDR}" == */* ]]; then
+            ip addr replace "${VPNDMZ_GW}/${vpndmz_prefix}" dev "vpndmzvn" || true
+            if [[ -n "${VPN_POOL:-}" && -n "${PT_EG_IP:-}" ]]; then
+                ip route replace "${VPN_POOL}" via "${PT_EG_IP}" dev "vpndmzvn"
+            fi
+        fi
+        for i in $(seq 1 "$NUM_PJ"); do
+            idx=$(printf '%02d' "$i")
+            gw_var="PJ${idx}_GW"
+            cidr_var="PJ${idx}_CIDR"
+            gw="${!gw_var:-}"
+            cidr="${!cidr_var:-}"
+            prefix="${cidr#*/}"
+            [[ -n "$gw" && -n "$prefix" ]] || continue
+            ip addr replace "${gw}/${prefix}" dev "vnetpj${idx}" || true
+        done
+
+        for _ in 1 2 3; do
+            garp_cycle "$main_vip_ip"
+            if [[ -n "${VPNDMZ_GW:-}" ]]; then
+                garp_cycle "$VPNDMZ_GW"
+            fi
+            for i in $(seq 1 "$NUM_PJ"); do
+                idx=$(printf '%02d' "$i")
+                gw_var="PJ${idx}_GW"
+                gw="${!gw_var:-}"
+                [[ -n "$gw" ]] || continue
+                garp_cycle "$gw"
+            done
+            wait
+            sleep 0.2
+        done
+        log "Became MASTER: VIP/GW attached and GARP completed"
+        ;;
+    backup|fault|stop)
+        log "notify_${ACTION} start"
+        if [[ -n "${VPNDMZ_GW:-}" && -n "${VPNDMZ_CIDR:-}" && "${VPNDMZ_CIDR}" == */* ]]; then
+            if [[ -n "${VPN_POOL:-}" && -n "${PT_EG_IP:-}" ]]; then
+                ip route del "${VPN_POOL}" via "${PT_EG_IP}" dev "vpndmzvn" 2>/dev/null || true
+            fi
+            ip addr del "${VPNDMZ_GW}/${vpndmz_prefix}" dev "vpndmzvn" 2>/dev/null || true
+        fi
+        for i in $(seq 1 "$NUM_PJ"); do
+            idx=$(printf '%02d' "$i")
+            gw_var="PJ${idx}_GW"
+            cidr_var="PJ${idx}_CIDR"
+            gw="${!gw_var:-}"
+            cidr="${!cidr_var:-}"
+            prefix="${cidr#*/}"
+            [[ -n "$gw" && -n "$prefix" ]] || continue
+            ip addr del "${gw}/${prefix}" dev "vnetpj${idx}" 2>/dev/null || true
+        done
+        log "Became ${ACTION}: GW detached"
+        ;;
+    *)
+        log "Unknown action: $ACTION"
+        exit 1
+        ;;
+esac
+EOF
+    chmod 755 "$HOOK_PATH"
+}
+
+################################################################################
+# Function: remove_local_gateway_backend
+# Description: Patch mslsetup-vxlan-gw hooks to no-op immediately in cluster mode.
+#
+# Main commands/functions used:
+#   - awk: Inject early exit while preserving existing hook body
+################################################################################
+remove_local_gateway_backend() {
+    local hook
+    local tmp
+    local marker="# mslcm-cluster-disable-vnetpj"
+
+    for hook in /etc/network/if-up.d/mslsetup-vxlan-gw /etc/network/if-down.d/mslsetup-vxlan-gw; do
+        [[ -f "$hook" ]] || continue
+
+        if grep -Fq "$marker" "$hook"; then
+            continue
+        fi
+
+        tmp="${hook}.tmp"
+        awk -v m="$marker" '
+            {
+                print
+                if (!inserted && $0 ~ /^set -euo pipefail$/) {
+                    print ""
+                    print m
+                    print "exit 0"
+                    inserted=1
+                }
+            }
+            END {
+                if (!inserted) {
+                    print ""
+                    print m
+                    print "exit 0"
+                }
+            }
+        ' "$hook" > "$tmp"
+        mv "$tmp" "$hook"
+        chmod 0755 "$hook"
+    done
+
+    if command -v ifreload >/dev/null 2>&1; then
+        ifreload -a
+    fi
+}
+
+################################################################################
+# Function: get_valid_vip
+# Description: Prompt and validate VIP until a usable IP is provided.
+#
+# Main commands/functions used:
+#   - ipcalc/ping/arping: VIP validation checks
+#   - read: Interactive prompt
+################################################################################
+get_valid_vip() {
+    local main_if="$1"
+    local vip
+    local broadcast calc_out
+
+    calc_out="$(ipcalc "$ML_CIDR" 2>/dev/null || true)"
+    broadcast="$(printf '%s\n' "$calc_out" | awk '/^Broadcast:/ {print $2; exit}')"
+    if [[ -z "$broadcast" ]]; then
+        broadcast="$(ipcalc -b "$ML_CIDR" 2>/dev/null | awk -F= '/BROADCAST/ {print $2; exit}')"
+    fi
+    if [[ -z "$broadcast" ]]; then
+        log_error "Failed to resolve broadcast address from ML_CIDR: $ML_CIDR"
+        exit 1
+    fi
+
+    while true; do
+        echo "Enter MainLAN cluster VIP (shared virtual IP for keepalived) in ${ML_CIDR}:" >&2
+        read -r -p "This IP will be shared by the active node and used as the cluster access / route target: " vip
+        if [[ ! "$vip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+            log_warn "Invalid IPv4 format."
+            continue
+        fi
+
+        if ! ip_in_cidr "$vip" "$ML_CIDR"; then
+            log_warn "VIP is outside MainLAN CIDR."
+            continue
+        fi
+
+        if [[ "$vip" == "$ML_GW" ]]; then
+            log_warn "VIP must not match ML_GW ($ML_GW)."
+            continue
+        fi
+
+        if [[ "$vip" == "$broadcast" ]]; then
+            log_warn "VIP must not be broadcast address ($broadcast)."
+            continue
+        fi
+
+        if ping -c 1 -W 1 "$vip" >/dev/null 2>&1; then
+            log_warn "$vip is already in use. Please re-enter VIP."
+            continue
+        fi
+
+        if arping -c 1 -I "$main_if" "$vip" >/dev/null 2>&1; then
+            log_warn "$vip is already in use. Please re-enter VIP."
+            continue
+        fi
+
+        printf '%s\n' "$vip"
+        return 0
+    done
+}
+
+################################################################################
+# Function: extract_keepalived_value
+# Description: Extract a simple key value from local keepalived.conf.
+#
+# Main commands/functions used:
+#   - awk: Parse keepalived conf values
+################################################################################
+extract_keepalived_value() {
+    local key="$1"
+    awk -v k="$key" '$1 == k {print $2; exit}' "$KEEPALIVED_CONF"
+}
+
+################################################################################
+# Function: extract_local_vip_cidr
+# Description: Extract VIP CIDR and interface from keepalived virtual_ipaddress.
+#
+# Main commands/functions used:
+#   - awk: Parse virtual_ipaddress block
+################################################################################
+extract_local_vip_cidr() {
+    awk '/virtual_ipaddress[[:space:]]*\{/{f=1;next} f && /}/ {f=0} f && NF>=1 {print $1; exit}' "$KEEPALIVED_CONF"
+}
+
+################################################################################
+# Function: remote_exec
+# Description: Run shell command on remote node using permissive host-key options.
+#
+# Main commands/functions used:
+#   - ssh: Execute remote command
+################################################################################
+remote_exec() {
+    local node_ip="$1"
+    shift
+    ssh "${SSH_OPTS[@]}" "root@${node_ip}" "$@"
+}
+
+################################################################################
+# Function: remote_copy
+# Description: Copy file to remote node using permissive host-key options.
+#
+# Main commands/functions used:
+#   - scp: Copy files remotely
+################################################################################
+remote_copy() {
+    local src="$1"
+    local dst_ip="$2"
+    local dst_path="$3"
+    scp "${SSH_OPTS[@]}" "$src" "root@${dst_ip}:$dst_path"
+}
+
+################################################################################
+# Function: update_zone_peers
+# Description: Add target node IP to vpndmz and all devpjXX zone peer lists idempotently.
+#
+# Main commands/functions used:
+#   - pvesh/jq: Read and update SDN zone peers
+################################################################################
+update_zone_peers() {
+    local node_ip="$1"
+    local json peers new_peers
+
+    # Update vpndmz zone peers first
+    json="$(pvesh get "/cluster/sdn/zones/vpndmz" --output-format json 2>/dev/null || true)"
+    if [[ -n "$json" ]]; then
+        peers="$(printf '%s' "$json" | jq -r '.peers // ""')"
+        if printf ',%s,' "$peers" | grep -q ",${node_ip},"; then
+            log_info "Zone vpndmz: peer ${node_ip} already present; skipping"
+        else
+            if [[ -z "$peers" ]]; then
+                new_peers="$node_ip"
+            else
+                new_peers="${peers},${node_ip}"
+            fi
+            new_peers="$(printf '%s' "$new_peers" | tr ',' '\n' | sed '/^$/d' | awk '!seen[$0]++' | paste -sd ',' -)"
+            pvesh set "/cluster/sdn/zones/vpndmz" -peers "$new_peers" >/dev/null
+            log_info "Zone vpndmz: peers updated -> ${new_peers}"
+        fi
+    else
+        log_warn "Zone vpndmz not found; skipping peer update"
+    fi
+
+    for i in $(seq 1 "$NUM_PJ"); do
+        local idx zone json peers new_peers
+        idx=$(printf '%02d' "$i")
+        zone="devpj${idx}"
+
+        json="$(pvesh get "/cluster/sdn/zones/${zone}" --output-format json 2>/dev/null || true)"
+        [[ -n "$json" ]] || continue
+
+        peers="$(printf '%s' "$json" | jq -r '.peers // ""')"
+
+        if printf ',%s,' "$peers" | grep -q ",${node_ip},"; then
+            log_info "Zone ${zone}: peer ${node_ip} already present; skipping"
+            continue
+        fi
+
+        if [[ -z "$peers" ]]; then
+            new_peers="$node_ip"
+        else
+            new_peers="${peers},${node_ip}"
+        fi
+
+        new_peers="$(printf '%s' "$new_peers" | tr ',' '\n' | sed '/^$/d' | awk '!seen[$0]++' | paste -sd ',' -)"
+        pvesh set "/cluster/sdn/zones/${zone}" -peers "$new_peers" >/dev/null
+        log_info "Zone ${zone}: peers updated -> ${new_peers}"
+    done
+
+    pvesh set /cluster/sdn >/dev/null
+    log_info "SDN apply completed after peer updates."
+}
+
+################################################################################
+# Function: cmd_enable_cluster
+# Description: Implement mslcm enable-cluster workflow.
+#
+# Main commands/functions used:
+#   - keepalived/arping: HA and ARP handling
+#   - ipcalc/ping: VIP validation
+################################################################################
+cmd_enable_cluster() {
+    require_root
+    require_cmd pvecm
+    require_cmd pvesh
+    require_cmd jq
+    require_cmd ip
+    require_cmd ipcalc
+    require_cmd ping
+
+    if ! pvecm status 2>&1 | grep -q '^0x'; then
+        log_info "Proxmox cluster has not been created on this node yet."
+        log_info "Skipping 'mslcm enable-cluster' and exiting successfully."
+        log_info "After the cluster is created, run this command again on the initial node."
+        return 0
+    fi
+
+    ensure_shared_env
+    ensure_packages_local
+
+    local main_if vip vip_cidr vrid auth_pass
+    main_if="$(detect_main_interface)"
+    vip="$(get_valid_vip "$main_if")"
+    vip_cidr="${vip}/${ML_CIDR#*/}"
+
+    ensure_vxlan_peers_ipset
+    ensure_vxlan_peer_entry "$PVE_IP"
+    ensure_vxlan_peers_fw_rule
+    ensure_vrrp_peers_fw_rule
+
+    vrid=51
+    auth_pass="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 8 || true)"
+    if [[ -z "$auth_pass" ]]; then
+        auth_pass="Ze!0gx"
+    fi
+
+    write_cluster_env "$main_if" "$vip_cidr" "$vrid" "$auth_pass"
+    render_keepalived_conf "$main_if" "$vip_cidr" 100 "$vrid" "$auth_pass"
+    create_vip_hook
+    remove_local_gateway_backend
+
+    systemctl enable keepalived >/dev/null 2>&1 || true
+    systemctl restart keepalived
+
+    log_info "========================================================================="
+    log_info "enable-cluster completed."
+    log_info "========================================================================="
+    log_info "Important: Update Static route: destination ${PJALL_CIDR} -> gateway ${vip} (VIP)"
+    log_info "Now you can use the VIP to access the Proxmox dashboard: https://${vip}:8006"
+}
+
+################################################################################
+# Function: cmd_add_node
+# Description: Implement mslcm add-node workflow.
+#
+# Main commands/functions used:
+#   - ssh/scp: Remote installation and distribution
+#   - pvesh: Node firewall options and SDN peer update
+################################################################################
+cmd_add_node() {
+    require_root
+    require_cmd pvecm
+    require_cmd pvesh
+    require_cmd jq
+    require_cmd ssh
+    require_cmd scp
+
+    check_cluster_state
+    ensure_shared_env
+
+    if [[ ! -f "$KEEPALIVED_CONF" ]]; then
+        log_error "Local keepalived.conf not found. Run enable-cluster first."
+        exit 1
+    fi
+
+    local target_ip
+    target_ip="$(choose_target_node "${1:-}")"
+    assert_target_is_cluster_member "$target_ip"
+
+    local target_node_name
+    target_node_name="$(remote_exec "$target_ip" "hostname -s" 2>/dev/null | tr -d '[:space:]')"
+    if [[ -z "$target_node_name" ]]; then
+        log_error "Failed to resolve target node name via SSH: ${target_ip}"
+        exit 1
+    fi
+
+    log_info "Enabling host firewall and nftables on target node ${target_node_name}..."
+    if pvesh set "/nodes/${target_node_name}/firewall/options" -enable 1 -nftables 1 >/dev/null 2>&1; then
+        log_info "Host firewall and nftables enabled on ${target_node_name}"
+    else
+        log_error "Failed to enable host firewall/nftables on ${target_node_name}"
+        exit 1
+    fi
+
+    ensure_vxlan_peers_ipset
+    ensure_vxlan_peer_entry "$target_ip"
+
+    local vip_cidr main_if vrid auth_pass priority
+    vip_cidr="$(extract_local_vip_cidr)"
+    main_if="$(extract_keepalived_value interface)"
+    vrid="$(extract_keepalived_value virtual_router_id)"
+    auth_pass="$(awk '$1=="auth_pass"{print $2; exit}' "$KEEPALIVED_CONF")"
+    priority="$(calc_priority_from_nodeid "$target_ip")"
+
+    if [[ -z "$vip_cidr" || -z "$main_if" || -z "$vrid" || -z "$auth_pass" || -z "$priority" ]]; then
+        log_error "Failed to extract required values from local keepalived.conf"
+        exit 1
+    fi
+
+    log_info "Calculated keepalived priority for ${target_ip}: ${priority}"
+
+    log_info "Installing keepalived and arping for ${target_ip}..."
+    remote_exec "$target_ip" "apt-get update -y && apt-get install -y keepalived arping >/dev/null 2>&1"
+    log_info "Copying $HOOK_PATH for ${target_ip}..."
+    remote_copy "$HOOK_PATH" "$target_ip" "$HOOK_PATH"
+    remote_exec "$target_ip" "chmod 755 $HOOK_PATH"
+
+    local tmp_conf
+    tmp_conf="$(mktemp)"
+    cat > "$tmp_conf" <<EOF
+global_defs {
+    enable_script_security
+    script_user root
+}
+
+vrrp_script check_gw_reachability {
+    script "/usr/bin/ping -c 1 -W 1 ${ML_GW}"
+    interval 2
+    weight -20
+    fall 2
+    rise 2
+}
+
+vrrp_instance VI_1 {
+    state BACKUP
+    interface ${main_if}
+    virtual_router_id ${vrid}
+    priority ${priority}
+    advert_int 1
+    nopreempt
+
+    authentication {
+        auth_type PASS
+        auth_pass ${auth_pass}
+    }
+
+    virtual_ipaddress {
+        ${vip_cidr} dev ${main_if}
+    }
+
+    track_script {
+        check_gw_reachability
+    }
+
+    notify_master "${HOOK_PATH} master"
+    notify_backup "${HOOK_PATH} backup"
+    notify_stop   "${HOOK_PATH} stop"
+    notify_fault  "${HOOK_PATH} fault"
+}
+EOF
+
+    remote_copy "$tmp_conf" "$target_ip" "$KEEPALIVED_CONF"
+    rm -f "$tmp_conf"
+
+    remote_exec "$target_ip" "chmod 600 $KEEPALIVED_CONF && systemctl enable keepalived >/dev/null 2>&1 || true; systemctl restart keepalived"
+
+    update_zone_peers "$target_ip"
+
+    log_info "add-node completed for ${target_ip}"
+}
+
+################################################################################
+# Function: cmd_del_node
+# Description: Implement mslcm del-node workflow (reverse of add-node).
+#
+# Main commands/functions used:
+#   - pvesh: SDN peer and IPSet cleanup
+#   - ssh: Remote keepalived config/script cleanup
+################################################################################
+cmd_del_node() {
+    require_root
+    require_cmd pvecm
+    require_cmd pvesh
+    require_cmd jq
+    require_cmd ssh
+
+    check_cluster_state
+    ensure_shared_env
+
+    local target_ip
+    target_ip="$(choose_target_node "${1:-}")"
+    assert_target_is_cluster_member "$target_ip"
+
+    # Reverse order of add-node: peer update rollback first.
+    remove_zone_peers "$target_ip"
+
+    # Reverse remote keepalived provisioning: stop service and remove files.
+    # If node is already removed/unreachable, keep local cleanup going.
+    if remote_exec "$target_ip" "true"; then
+        local target_node_name
+        target_node_name="$(remote_exec "$target_ip" "hostname -s" 2>/dev/null | tr -d '[:space:]')"
+        if [[ -n "$target_node_name" ]]; then
+            log_info "Disabling host firewall and nftables on target node ${target_node_name}..."
+            if pvesh set "/nodes/${target_node_name}/firewall/options" -enable 0 -nftables 0 >/dev/null 2>&1; then
+                log_info "Host firewall and nftables disabled on ${target_node_name}"
+            else
+                log_warn "Failed to disable host firewall/nftables on ${target_node_name}; continuing cleanup"
+            fi
+        else
+            log_warn "Failed to resolve target node name via SSH: ${target_ip}; skipping firewall options OFF"
+        fi
+
+        log_info "Stopping keepalived and cleaning up files on ${target_ip}..."
+        remote_exec "$target_ip" "systemctl disable keepalived >/dev/null 2>&1 || true; systemctl stop keepalived >/dev/null 2>&1 || true"
+        log_info "Removing keepalived configuration and hooks on ${target_ip}..."
+        remote_exec "$target_ip" "rm -f $KEEPALIVED_CONF $HOOK_PATH"
+
+        log_info "Purging keepalived stack (including orphan dependencies) on ${target_ip}..."
+        remote_exec "$target_ip" "DEBIAN_FRONTEND=noninteractive apt-get purge -y keepalived arping >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get remove -y keepalived arping >/dev/null 2>&1 || true; DEBIAN_FRONTEND=noninteractive apt-get autoremove -y --purge >/dev/null 2>&1 || true"
+    else
+        log_warn "Target node unreachable (${target_ip}); skipping remote cleanup steps"
+    fi
+
+    # Reverse vxlan_peers registration.
+    log_info "Removing ${target_ip} from vxlan_peers IPSet and firewall rules..."
+    remove_vxlan_peer_entry "$target_ip"
+    cleanup_vxlan_peers_ipset_if_empty
+
+    remove_backup_entry_from_cluster_env "$target_ip"
+
+    log_info "del-node completed for ${target_ip}"
+}
+
+################################################################################
+# Function: cmd_disable_cluster
+# Description: Implement mslcm disable-cluster workflow (reverse of enable-cluster).
+#
+# Main commands/functions used:
+#   - systemctl/rm: Local keepalived and file cleanup
+#   - pvesh: Datacenter FW/IPSet cleanup
+################################################################################
+cmd_disable_cluster() {
+    require_root
+    require_cmd pvecm
+    require_cmd pvesh
+    require_cmd jq
+
+    check_cluster_state
+    ensure_shared_env
+
+    # Reverse order of enable-cluster.
+    systemctl disable keepalived >/dev/null 2>&1 || true
+    systemctl stop keepalived >/dev/null 2>&1 || true
+
+    restore_local_gateway_backend
+
+    rm -f "$HOOK_PATH" "$KEEPALIVED_CONF" "$CLUSTER_ENV"
+    remove_packages_local
+
+    remove_vxlan_peers_fw_rule
+    remove_vrrp_peers_fw_rule
+    remove_vxlan_peer_entry "$PVE_IP"
+    cleanup_vxlan_peers_ipset_if_empty
+
+    log_info "disable-cluster completed on local node"
+}
+
+################################################################################
+# Function: cmd_enable_vpn_ha
+# Description: Placeholder for v2.0-c implementation.
+#
+# Main commands/functions used:
+#   - echo: Show placeholder guidance
+################################################################################
+cmd_enable_vpn_ha() {
+    log_warn "enable-vpn-ha is reserved for v2.0-c and is not implemented yet."
+    exit 1
+}
+
+################################################################################
+# Function: usage
+# Description: Print command usage help.
+#
+# Main commands/functions used:
+#   - cat: Print usage text
+################################################################################
+usage() {
+    cat <<'EOF'
+Usage:
+  mslcm enable-cluster
+  mslcm add-node [node-ip]
+    mslcm del-node [node-ip]
+    mslcm disable-cluster
+  mslcm enable-vpn-ha
+EOF
+}
+
+main() {
+    local subcmd="${1:-}"
+    case "$subcmd" in
+        enable-cluster)
+            shift
+            cmd_enable_cluster "$@"
+            ;;
+        add-node)
+            shift
+            cmd_add_node "$@"
+            ;;
+        del-node)
+            shift
+            cmd_del_node "$@"
+            ;;
+        disable-cluster)
+            shift
+            cmd_disable_cluster "$@"
+            ;;
+        enable-vpn-ha)
+            shift
+            cmd_enable_vpn_ha "$@"
+            ;;
+        -h|--help|help)
+            usage
+            ;;
+        *)
+            usage
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

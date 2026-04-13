@@ -122,9 +122,9 @@ readonly VMID_RECORD_FILE="${SCRIPT_DIR}/.last_created_vmid"
 readonly VALIDATE_SCRIPT="$SCRIPT_DIR/lib/pritunl_build_helper"
 
 # Fixed ICMP firewall rule comments (independent from .env)
-readonly ICMP_RULE_COMMENT1_FIXED="ICMP_RULE1_PRTN_VPNDMZ_GW"
-readonly ICMP_RULE_COMMENT2_FIXED="ICMP_RULE2_PRTN_DEVPJS"
-readonly ICMP_RULE_COMMENT3_FIXED="ICMP_RULE3_MAINLAN_ANY"
+readonly ICMP_RULE_COMMENT1_FIXED="MSLSetup ICMP Prtn VPNDMZ GW"
+readonly ICMP_RULE_COMMENT2_FIXED="MSLSetup ICMP Prtn DEVPJS"
+readonly ICMP_RULE_COMMENT3_FIXED="MSLSetup ICMP Prtn MAINLAN ANY"
 
 # ============================================================================
 # Logging Setup
@@ -134,33 +134,29 @@ setup_logging "02_deploy_pritunl"
 
 ################################################################################
 # Function: find_rule_pos_by_comment
-# Description: Find the firewall rule position by its comment for the current node.
+# Description: Find the datacenter firewall rule position by its comment.
 #
 # Main commands/functions used:
-#   - pvesh: Query node firewall rules
+#   - pvesh: Query datacenter firewall rules
 #   - jq: JSON filtering
 ################################################################################
 find_rule_pos_by_comment() {
-    local node_name="$1"
-    local comment="$2"
-    pvesh get "/nodes/${node_name}/firewall/rules" --output-format json 2>/dev/null \
+    local comment="$1"
+    pvesh get "/cluster/firewall/rules" --output-format json 2>/dev/null \
         | jq -r --arg c "$comment" '.[] | select(.comment == $c) | .pos' \
         | head -n 1
 }
 
 ################################################################################
 # Function: enable_icmp_rule_by_comment
-# Description: Enable a host firewall ICMP rule by comment (no-op if missing)
+# Description: Enable a datacenter firewall ICMP rule by comment (no-op if missing)
 #
 # Main commands/functions used:
-#   - hostname: Determine node name
 #   - pvesh set: Toggle rule enable flag
 ################################################################################
 enable_icmp_rule_by_comment() {
     local comment="$1"
     local desc="$2"
-    local node_name
-    node_name=$(hostname)
 
     if [[ -z "$comment" ]]; then
         log_warn "ICMP rule comment missing for ${desc}; skipping enable"
@@ -169,14 +165,14 @@ enable_icmp_rule_by_comment() {
     fi
 
     local rule_id
-    rule_id=$(find_rule_pos_by_comment "$node_name" "$comment")
+    rule_id=$(find_rule_pos_by_comment "$comment")
     if [[ -z "$rule_id" ]]; then
         log_warn "ICMP rule not found for comment ${comment}; skipping enable"
         printf "$MSG_ICMP_ENABLE_SKIP\n" "$comment"
         return 0
     fi
 
-    if pvesh set "/nodes/${node_name}/firewall/rules/${rule_id}" -enable 1 2>&1; then
+    if pvesh set "/cluster/firewall/rules/${rule_id}" -enable 1 2>&1; then
         log_info "Enabled ICMP rule comment=${comment} (pos=${rule_id}) (${desc})"
         printf "$MSG_ICMP_ENABLE_OK\n" "$rule_id"
     else
@@ -187,17 +183,14 @@ enable_icmp_rule_by_comment() {
 
 ################################################################################
 # Function: disable_icmp_rule_by_comment
-# Description: Disable a host firewall ICMP rule by comment (no-op if missing)
+# Description: Disable a datacenter firewall ICMP rule by comment (no-op if missing)
 #
 # Main commands/functions used:
-#   - hostname: Determine node name
 #   - pvesh set: Toggle rule enable flag
 ################################################################################
 disable_icmp_rule_by_comment() {
     local comment="$1"
     local desc="$2"
-    local node_name
-    node_name=$(hostname)
 
     if [[ -z "$comment" ]]; then
         log_warn "ICMP rule comment missing for ${desc}; skipping disable"
@@ -206,14 +199,14 @@ disable_icmp_rule_by_comment() {
     fi
 
     local rule_id
-    rule_id=$(find_rule_pos_by_comment "$node_name" "$comment")
+    rule_id=$(find_rule_pos_by_comment "$comment")
     if [[ -z "$rule_id" ]]; then
         log_warn "ICMP rule not found for comment ${comment}; skipping disable"
         printf "$MSG_ICMP_DISABLE_SKIP\n" "$comment"
         return 0
     fi
 
-    if pvesh set "/nodes/${node_name}/firewall/rules/${rule_id}" -enable 0 2>&1; then
+    if pvesh set "/cluster/firewall/rules/${rule_id}" -enable 0 2>&1; then
         log_info "Disabled ICMP rule comment=${comment} (pos=${rule_id}) (${desc})"
         printf "$MSG_ICMP_DISABLE_OK\n" "$rule_id"
     else
@@ -284,6 +277,7 @@ if [ -f "$VMID_RECORD_FILE" ]; then
         if [ "$vm_status" = "running" ]; then
             msg_printf VM_STOPPING
             qm stop "$PREVIOUS_VMID"
+            while qm status "$PREVIOUS_VMID" | grep -q running; do sleep 1; done
             sleep 2
         fi
         

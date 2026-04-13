@@ -844,12 +844,12 @@ perform_verification() {
     fi
     
     # Verify return route exists on PVE
-    log_info "Verifying return route on PVE host..."
-    if ip route show | grep -q "${VPN_POOL}.*${PT_EG_IP}"; then
-        log_info "Return route exists: ${VPN_POOL} via ${PT_EG_IP}"
-    else
-        die "Return route not found (should have been configured in Phase 1)"
-    fi
+    # log_info "Verifying return route on PVE host..."
+    # if ip route show | grep -q "${VPN_POOL}.*${PT_EG_IP}"; then
+    #     log_info "Return route exists: ${VPN_POOL} via ${PT_EG_IP}"
+    # else
+    #     die "Return route not found (should have been configured in Phase 1)"
+    # fi
     
     log_info "Verification completed"
 }

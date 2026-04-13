@@ -344,53 +344,167 @@ create_sdn_subnet() {
 
 ################################################################################
 # Function: persist_vpn_pool_route
-# Description: Ensure VPN pool route persistence block exists in vpndmzvn iface block
+# Description: Legacy cleanup helper for deprecated mslsetup-route hooks
 # Main commands/functions used:
-#   - awk: Insert route commands into vpndmzvn interface block
+#   - rm: Remove legacy hook scripts if present
 ################################################################################
 persist_vpn_pool_route() {
+    remove_vpn_pool_route_hooks
+    log_info "Legacy vpndmzvn route hooks removed; route handling moved to mslsetup-vxlan-gw"
+}
+
+################################################################################
+# Function: remove_vpn_pool_route_hooks
+# Description: Remove vpndmzvn route hook scripts created by persist_vpn_pool_route
+# Main commands/functions used:
+#   - rm: Delete hook scripts if present
+################################################################################
+remove_vpn_pool_route_hooks() {
+    local if_up_hook="/etc/network/if-up.d/mslsetup-route"
+    local if_down_hook="/etc/network/if-down.d/mslsetup-route"
+
+    rm -f "$if_up_hook" "$if_down_hook"
+    log_info "vpndmzvn route hooks removed (if existed)"
+}
+
+################################################################################
+# Function: persist_project_gateway_hooks
+# Description: Ensure per-project gateway hooks exist via if-up/if-down scripts
+# Main commands/functions used:
+#   - cat/printf: Generate hook scripts for vnetpjXX interfaces
+#   - awk: Remove legacy post-up/pre-down lines from interfaces.d/sdn
+################################################################################
+persist_project_gateway_hooks() {
+    local if_up_hook="/etc/network/if-up.d/mslsetup-vxlan-gw"
+    local if_down_hook="/etc/network/if-down.d/mslsetup-vxlan-gw"
     local sdn_file="/etc/network/interfaces.d/sdn"
-    
-    if grep -q "up ip route add $VPN_POOL via $PT_EG_IP" "$sdn_file" 2>/dev/null; then
-        log_info "Route persistence already configured in $sdn_file"
-        return 0
+    local tmp_file="${sdn_file}.tmp"
+    local up_tmp
+    local down_tmp
+    local i idx iface cidr_var gw_var cidr gw prefix
+    local valid_count=0
+
+    up_tmp="$(mktemp)"
+    down_tmp="$(mktemp)"
+
+    cat > "$up_tmp" <<'EOF'
+#!/bin/bash
+################################################################################
+# Zelogx Multi-Project Secure Lab Setup
+#
+# Filename: mslsetup-vxlan-gw
+# Purpose: Add project gateway IP when a vnetpjXX interface is brought up
+################################################################################
+
+set -euo pipefail
+
+case "${IFACE:-}" in
+EOF
+
+    cat > "$down_tmp" <<'EOF'
+#!/bin/bash
+################################################################################
+# Zelogx Multi-Project Secure Lab Setup
+#
+# Filename: mslsetup-vxlan-gw
+# Purpose: Remove project gateway IP when a vnetpjXX interface is brought down
+################################################################################
+
+set -euo pipefail
+
+case "${IFACE:-}" in
+EOF
+
+    for i in $(seq 1 "$NUM_PJ"); do
+        idx=$(printf '%02d' "$i")
+        iface="vnetpj${idx}"
+        cidr_var="PJ${idx}_CIDR"
+        gw_var="PJ${idx}_GW"
+        cidr="${!cidr_var:-}"
+        gw="${!gw_var:-}"
+
+        if [[ -z "$cidr" || -z "$gw" ]]; then
+            log_warn "Skipping $iface hook generation due to missing ${cidr_var} or ${gw_var}"
+            continue
+        fi
+
+        if [[ "$cidr" != */* ]]; then
+            log_warn "Skipping $iface hook generation due to invalid CIDR: $cidr"
+            continue
+        fi
+        prefix="${cidr#*/}"
+
+        printf '    %s) ip addr replace %s/%s dev %s || true ;;\n' "$iface" "$gw" "$prefix" "$iface" >> "$up_tmp"
+        printf '    %s) ip addr del %s/%s dev %s || true ;;\n' "$iface" "$gw" "$prefix" "$iface" >> "$down_tmp"
+        valid_count=$((valid_count + 1))
+    done
+
+    if [[ -n "${VPNDMZ_CIDR:-}" && -n "${VPNDMZ_GW:-}" && "${VPNDMZ_CIDR}" == */* ]]; then
+        prefix="${VPNDMZ_CIDR#*/}"
+        printf '    vpndmzvn) ip addr replace %s/%s dev vpndmzvn || true; ip route replace %s via %s dev vpndmzvn ;;\n' "$VPNDMZ_GW" "$prefix" "$VPN_POOL" "$PT_EG_IP" >> "$up_tmp"
+        printf '    vpndmzvn) ip route del %s via %s dev vpndmzvn 2>/dev/null || true; ip addr del %s/%s dev vpndmzvn || true ;;\n' "$VPN_POOL" "$PT_EG_IP" "$VPNDMZ_GW" "$prefix" >> "$down_tmp"
+        valid_count=$((valid_count + 1))
+    else
+        log_warn "Skipping vpndmzvn hook generation due to missing/invalid VPNDMZ_CIDR or VPNDMZ_GW"
     fi
 
-    log_info "Adding route persistence to vpndmzvn interface block in $sdn_file"
-    log_info "  Route: $VPN_POOL via $PT_EG_IP dev vpndmzvn"
-    # Insert post-up/pre-down lines into vpndmzvn block (after last indented line)
-    awk -v pool="$VPN_POOL" -v egip="$PT_EG_IP" '
-    /^iface vpndmzvn/ { in_vpndmzvn=1; print; next }
-    in_vpndmzvn && /^[[:space:]]/ { 
-        buf = buf $0 "\n"
-        next 
-    }
-    in_vpndmzvn && !/^[[:space:]]/ {
-        # End of vpndmzvn block - insert routes before next section
-        printf "%s", buf
-        print "        post-up ip route add " pool " via " egip " dev vpndmzvn || true"
-        print "        pre-down ip route del " pool " via " egip " dev vpndmzvn || true"
-        in_vpndmzvn=0
-        buf=""
-        print
-        next
-    }
-    { print }
-    END {
-        # If file ended while in vpndmzvn block
-        if (in_vpndmzvn && buf != "") {
-            printf "%s", buf
-            print "        post-up ip route add " pool " via " egip " dev vpndmzvn || true"
-            print "        pre-down ip route del " pool " via " egip " dev vpndmzvn || true"
-        }
-    }
-    ' "$sdn_file" > "${sdn_file}.tmp"
-    
-    # Replace original with modified version
-    mv "${sdn_file}.tmp" "$sdn_file"
-    
-    ifreload -a
-    log_info "Route persistence configuration added successfully"
+    cat >> "$up_tmp" <<'EOF'
+    *)
+        exit 0
+        ;;
+esac
+
+exit 0
+EOF
+
+    cat >> "$down_tmp" <<'EOF'
+    *)
+        exit 0
+        ;;
+esac
+
+exit 0
+EOF
+
+    mv "$up_tmp" "$if_up_hook"
+    mv "$down_tmp" "$if_down_hook"
+    chmod 0755 "$if_up_hook" "$if_down_hook"
+
+    # Remove legacy in-interface hooks from /etc/network/interfaces.d/sdn.
+    if [[ -f "$sdn_file" ]]; then
+        awk '
+            /post-up[[:space:]]+ip[[:space:]]+addr[[:space:]]+(add|replace)/ && /vnetpj[0-9][0-9]/ { next }
+            /pre-down[[:space:]]+ip[[:space:]]+addr[[:space:]]+del/ && /vnetpj[0-9][0-9]/ { next }
+            { print }
+        ' "$sdn_file" > "$tmp_file"
+        mv "$tmp_file" "$sdn_file"
+    fi
+
+    if command -v ifreload2 >/dev/null 2>&1; then
+        ifreload2 -a
+    else
+        ifreload -a
+    fi
+
+    if [[ "$valid_count" -gt 0 ]]; then
+        log_info "Project gateway hooks configured successfully for $valid_count interfaces"
+    else
+        log_warn "Project gateway hooks created with no valid vnetpj entries"
+    fi
+}
+
+################################################################################
+# Function: remove_project_gateway_hooks
+# Description: Remove vnetpj gateway hook scripts created by persist_project_gateway_hooks
+# Main commands/functions used:
+#   - rm: Delete hook scripts if present
+################################################################################
+remove_project_gateway_hooks() {
+    local if_up_hook="/etc/network/if-up.d/mslsetup-vxlan-gw"
+    local if_down_hook="/etc/network/if-down.d/mslsetup-vxlan-gw"
+
+    rm -f "$if_up_hook" "$if_down_hook"
+    log_info "vnetpj gateway hooks removed (if existed)"
 }
 
 # Helper: private IP detection (RFC1918 only)
@@ -470,8 +584,6 @@ take_vm_snapshot() {
     
     log_info "Creating VM snapshot for retry capability..." -c
     log_info "  VM ID: ${vmid}" -c
-    log_info "  Snapshot name: ${snap_name}" -c
-    
     if qm snapshot "$vmid" "$snap_name" --description "MSL Setup checkpoint" 2>&1; then
         log_info "Snapshot created successfully: ${snap_name}" -c
         return 0

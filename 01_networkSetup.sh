@@ -76,6 +76,39 @@ if [[ "$RESTORE_ONLY" == true ]]; then
     setup_cmd+=(--restore)
 fi
 
+cluster_cmd=(./0103_clusterSetup.sh "$LANG_ARG")
+if [[ "$RESTORE_ONLY" == true ]]; then
+    cluster_cmd+=(--restore)
+fi
+
+if [[ "$RESTORE_ONLY" == true ]]; then
+    ################################################################################
+    # Phase 1.1: Cluster Setup Restore (run first in restore mode)
+    ################################################################################
+    echo ""
+    echo "=========================================="
+    if [[ "$LANG_ARG" == "jp" ]]; then
+        echo "フェーズ 1.1: クラスタ設定リストア"
+    else
+        echo "Phase 1.1: Cluster Setup Restore"
+    fi
+    echo "=========================================="
+    echo ""
+
+    if ! "${cluster_cmd[@]}"; then
+        if [[ "$LANG_ARG" == "jp" ]]; then
+            echo ""
+            echo "エラー: クラスタ設定リストアが失敗しました"
+            echo "詳細はログを確認してください: logs/"
+        else
+            echo ""
+            echo "ERROR: Cluster setup restore failed"
+            echo "Check logs for details: logs/"
+        fi
+        exit 1
+    fi
+fi
+
 ################################################################################
 # Phase 1.2: Setup Proxmox SDN and Firewall
 ################################################################################
@@ -112,6 +145,43 @@ if ! "${setup_cmd[@]}"; then
         echo "Check logs for details: logs/"
     fi
     exit 1
+fi
+
+if [[ "$RESTORE_ONLY" != true ]]; then
+    echo ""
+    if [[ "$LANG_ARG" == "jp" ]]; then
+        echo "続行するには何かキーを押してください..."
+    else
+        echo "Press any key to continue..."
+    fi
+    read -n 1 -s -r
+    echo ""
+
+    ################################################################################
+    # Phase 1.3: Cluster Setup
+    ################################################################################
+    echo ""
+    echo "=========================================="
+    if [[ "$LANG_ARG" == "jp" ]]; then
+        echo "フェーズ 1.3: クラスタセットアップ"
+    else
+        echo "Phase 1.3: Cluster Setup"
+    fi
+    echo "=========================================="
+    echo ""
+
+    if ! "${cluster_cmd[@]}"; then
+        if [[ "$LANG_ARG" == "jp" ]]; then
+            echo ""
+            echo "エラー: クラスタセットアップが失敗しました"
+            echo "詳細はログを確認してください: logs/"
+        else
+            echo ""
+            echo "ERROR: Cluster setup failed"
+            echo "Check logs for details: logs/"
+        fi
+        exit 1
+    fi
 fi
 
 ################################################################################

@@ -6,20 +6,25 @@
 [![Release Notes](https://img.shields.io/badge/Release-notes-green)](https://www.zelogx.com/documents/release-notes/)
 
 
-Zelogx™ MSL Setup (Multiverse Secure Lab Setup) is a multi-tenant setup tool that virtually partitions a single Proxmox server into isolated environments for each project or team.  
+Zelogx™ MSL Setup (Multiverse Secure Lab Setup) is a multi-tenant enablement tool for Proxmox, designed for anything from a single node to a Proxmox cluster. It creates isolated multi-tenant environments for each project or team.
 
-By automatically attaching a dedicated VPN to each tenant, it lets authorized users securely reach the right project zone from anywhere.  
-Concretely, it configures Proxmox SDN (Simple Zones + VNets) and firewall rules for you, transforming a plain hypervisor into a collection of multi-tenant–ready virtual spaces. With GUI-based VPN management (Pritunl) and MFA, it minimizes operational overhead while keeping robustness enforced by mechanisms rather than manual discipline.
+It automatically configures Proxmox SDN and firewall rules, transforming a plain hypervisor into a collection of multi-tenant-ready virtual spaces. With v2.0, cluster support was added, enabling isolated networks to span multiple nodes through VXLAN Zones and VNets.
+
+By automatically attaching a dedicated VPN to each tenant, it enables authorized users to securely access the appropriate project subnet from anywhere. With GUI-based VPN management through Pritunl and MFA, it minimizes operational overhead while keeping robustness enforced by mechanisms rather than manual discipline.
 
 > [日本語版はこちら (README_jp.md)](./README_jp.md) <BR>
 > Official Web Site is [here](https://www.zelogx.com)
 
 © 2025 Zelogx. Zelogx™ and the Zelogx logo are trademarks of the Zelogx Project. All other marks are property of their respective owners.
 
+<section id="quickstart">
+
 ## 0. Overview
 
-This project builds **completely isolated development environments per project** by Layer 2 level, accessible securely via VPN.\
+This project builds **completely isolated development environments per project** at Layer 2, accessible securely via VPN.\
 It's a blueprint for **low-cost distributed development**, offshore projects, or private team labs.
+
+For the architecture background, design rationale, and engineering principles behind MSL Setup, see [ARCHITECTURE_AND_DESIGN_PRINCIPLES.md](./ARCHITECTURE_AND_DESIGN_PRINCIPLES.md).
 
 Note:  
 The following repository contains the **manual setup procedure** corresponding to this setup script.
@@ -27,7 +32,7 @@ The following repository contains the **manual setup procedure** corresponding t
 [MSL Setup Basic](https://github.com/zelogx/proxmox-msl-setup-basic/blob/main/build-instructions.md)
 
 See below for architecture diagram.
-![Zelogx MSL Setup Network Overview](docs/assets/zelogx-MSL-Setup.svg)
+![Zelogx MSL Setup Network Overview](docs/assets/zelogx-MSL-Setup-cluster.svg)
 
 ## 1. Quickstart
 > Please see [**Environmental Integrity & System Impact Report**](https://github.com/zelogx/msl-setup/wiki/Environmental-Integrity-&-System-Impact-Report) if you hesitate to run.<BR>
@@ -41,8 +46,8 @@ apt install -y ipcalc jq zip
 # Place the zip file on the proxmox server using scp or similar.
 
 # In Corporate edition,
-unzip msl-setup-pro-1.x.x_corporate.zip    # change x to correct version number
-cd msl-setup-pro-1.x.x_corporate
+unzip msl-setup-pro-x.x.x_corporate.zip    # change x to correct version number
+cd msl-setup-pro-x.x.x_corporate
 
 # In MSL Setup (Personal Edition),
 apt install -y git
@@ -67,145 +72,23 @@ cd msl-setup
 # This will:
 #   1. Destroy Pritunl VM (calls 0201_createPritunlVM.sh --destroy)
 #   2. Restore network configuration to backup state (calls 0102_setupNetwork.sh --restore)
+
+# (Optional) Cluster operation commands
+# No action is required if the Proxmox cluster was already enabled during the initial setup in v2.0 or later.
+# Run `add-node` when adding a new node to the cluster
+mslcm enable-cluster        # Promote MSL Setup to a cluster-enabled configuration
+mslcm disable-cluster       # Revert MSL Setup to a single-node configuration
+mslcm add-node <IP address> # Add a node to the MSL Setup cluster configuration
+mslcm del-node <IP address> # Remove a node from the MSL Setup cluster configuration
 ```
 
-### Security & Design Choices (FAQ)
-
-**Q: Can VM hopping be prevented?**
-
-**A:** Yes, isolation is enforced at the lab (tenant) boundary.
-
-- **Within a lab**: VMs inside the same isolated lab are allowed to talk to each other. This keeps the environment useful for realistic app, cluster, or service testing.
-- **Between labs**: Nftables + Proxmox SDN (the “Multiverse Enforcer”) prevent traffic from crossing project zones.
-- **Lab to host / management**: Forwarding to anything outside the designated VPN client pool and the upstream internet gateway is blocked by default. Host-level management networks and other labs remain dark.
+> **Note:** The Pritunl VM is NOT automatically registered as an HA resource upon installation.  
+> If you require HA management of the Pritunl VM in a cluster environment, please configure Proxmox HA separately.
 
 ---
 
-**Q: How are API tokens and permissions handled?**
+</section>
 
-**A:** Zelogx MSL Setup does not use the Proxmox API with tokens. It runs locally on the node and uses the native Proxmox CLI (`pvesh` and related tools) under root.
-
-- **Why root?** Configuring SDN objects, bridges, and nftables rules is inherently a system-level operation on Proxmox.
-- **Design choice**: Instead of adding another API surface (and token lifecycle) to secure, the tool relies on the existing Proxmox privilege model. All changes are visible as standard Proxmox SDN and firewall configuration, and there is no additional control plane to audit or harden.
-
-### 1.1. What You Get (Engineer's Perspective)
-
-On a single Proxmox VE node: 
-- Per-project, fully isolated network segments with VPN-secured access for remote teammates. 
-- Expose each project's environment to your team without risking the main LAN. 
-- Secure design --- no packets other than VPN tunnels traverse and DNS inquiry into your corporate or home LAN.
-- Automated client provisioning: user registration, certificate generation, and VPN management via Prutunl GUI.
-- GUI-based server control (start/stop per project VPN). 
-- No VLAN-capable switches required.
-- **Corporate Edition only** Self-service VM management within your project network: project members can independently create, delete, start, stop VMs, and manage snapshots and backups without administrator intervention.
-
-### 1.2. What You Get (Manager's Perspective)
-
-- Grant access **only to what each partner/freelancer needs**, preventing cross-project leaks by design.
-- Build a **private development cloud** for small/mid-size software firms or startups.
-- Safer, faster, and cheaper than giving developers full cloud freedom.
-- Entirely open-source --- all you need is **one small server (even a NUC)** and \~¥1,000/month for electricity.
-- No vendor lock-in, no subscription required.
-
-> Enterprise-grade solutions with similar capabilities are typically positioned at a significantly higher cost range.\
-> This achieves the same goal for (almost) zero cost.
-
-### 1.3. Comparison: Alternatives for personal / small office Proxmox multi-tenant setups
-
-Several approaches exist for building multi-tenant environments on Proxmox.
-The following table summarizes the practical differences.
-
-| Method                 | Learning Curve | Network Isolation | Automation      | Individual-Friendly |
-| ---------------------- | -------------- | ----------------- | --------------- | ------------------- |
-| RBAC + Resource Pools  | **Medium**     | None              | GUI only        | Limited             |
-| SDN + OPNsense         | **Very High**  | Strong            | Manual setup    | Partial             |
-| **MSL Setup Basic**    | **Low**        | Strong            | Manual (Guided) setup | Excellent          |
-| **MSL Setup Personal** | **Extremely Low** | Strong            | Fully automated | Excellent           |
-
-For a deeper explanation of each approach, see the [Proxmox Multi-tenant Guide](https://github.com/zelogx/msl-setup/wiki/Proxmox-Multi%E2%80%90tenant-Guide).
-
-
-### 1.4. Licensing
-
--   **Pritunl**\
-    Free to use, with optional paid features for enterprise management.\
-    A single enterprise license covers all servers in the cluster.\
-    → [Pritunl](https://pritunl.com)
-
--   **Proxmox VE**\
-The core Proxmox VE (PVE) software is open source and licensed under the GNU Affero General Public License v3 (AGPL v3). According to the official Proxmox stance, no “license fee” is charged — meaning there is no cost required to use the software itself. [Proxmox][1], [Proxmox Forum][2] \
-However, paid subscriptions (support contracts) are offered separately.
-
-[1]: https://pve.proxmox.com/?utm_source=chatgpt.com
-[2]: https://forum.proxmox.com/threads/licensing-is-the-pve-no-subscription-free-usage-legal-and-valid.107184/?utm_source=chatgpt.com
-
-### 1.5. Target Audience
-
-- “We already let our developers freely spin up AWS instances to build a fast, distributed development environment. Security? Well… when someone asks that, management and executives of small software houses just glance at the person in charge for help.”
-- “I have my own development/lab environment at home, so I aggressively spin up VMs and develop there. Other team members? I assume they’re each figuring things out on their own?”
-- “These days I use WSL and run Linux VMs on my Windows PC. Security if I lose my PC? BitLocker keeps it safe… or so they say. Everyone develops in totally different environments. Integration testing takes forever (lol).”
-- “Even in large enterprises, right. Servers are in the server room with strict access control. Basically, no personal data exists in the development environment. NDAs with each employee? Yes, we enforce those. And of course you can only log in through VDI. But the root password for all VMs is the same. And because they’re all on the same segment… theoretically, if someone wanted to log in to other VMs? They could, haha.”
-- “Also in large enterprises: projects that need it each have their own VPN. If you can log into one VM, could you get into others too? I haven’t checked, but I don’t think so… We’ve never had such an incident. Plus, we conduct security training twice a year.”
-
-### 1.6. Why This Matters
-
-#### 1.6.1. Typical Problems in Cloud Dev Environments
-
-Typical “Pain Points” When Development Environments Live in the Public Cloud
-- Still assigning a public IP directly to the VM and SSHing straight into it
-- Because it has a public IP, your untested web application server is actually exposed to the entire Internet
-- Development environments across projects are visible to each other
-- Spinning up a flood of instances without considering the blast radius
-- Network bandwidth dying because of large data transfers (yes, that old meme)
-- Approval → Estimation → Approval → Provisioning… What is “development speed” again?
-- “Just for testing” instances … left running for six months
-- Falling asleep waiting for builds on a weak CPU instance
-
-    Are we really safe letting application developers with low security literacy — or people who “think they understand infrastructure” — operate the cloud freely?
-    They’re not malicious. They simply lack the mechanisms required to fulfill the responsibilities expected of them.
-    The result: exploding costs, expanded attack surfaces, permission spaghetti, and the phenomenon of
-“Turns out on-prem was safer after all.”
-
-**Result:** High cost, low visibility, accidental exposure.\
-Even with best intentions, teams lack the "systemic guardrails" that prevent human error.
-
-### 1.7. Cost Efficiency Example
-Let’s compare AWS EC2 c5d.large (2 vCPUs) with a 2-vCPU VM running on an Intel NUC.\
-The machine used in this project: Intel NUC Pro, Core i7-1360P (12 cores / 16 threads, up to 5.0 GHz).
-
-| Item                     | AWS EC2 (c5d.large)      | 2-vCPU VM on NUC                          |
-| ------------------------ | ------------------------ | ----------------------------------------- |
-| Assigned vCPUs           | 2 vCPUs                  | 2 vCPUs                                   |
-| Physical CPU             | Xeon Platinum 8124M      | Core i7-1360P                             |
-| Physical CPU specs       | 18C/36T / max 3.5 GHz    | 12C/16T / max 5.0 GHz                     |
-| RAM                      | 4 GB                     | Custom / as needed                        |
-| Cost                     | **$89/month (~¥13,000)** | **~¥200/month electricity (for 2 vCPUs)** |
-| Storage                  | EBS (billed separately)  | Local NVMe (high-speed, low-latency)      |
-| Network charges          | Charged after 100 GB     | None (local LAN)                          |
-| Performance (2-vCPU eq.) | Baseline                 | **~3.3–3.5× faster in benchmarks**        |
-<BR>
-
-Reference benchmark score (baremetal)
-
-| Bench                  | Score(8124M) | Score@1360P |
-| ---------------------- | ----: | ----: |
-|PassMark single thread  |  2.040|  3.573|
-|PassMark CPU Mark       | 22.287| 20.824|
-|Geekbench 4 single core |  3.954|  6.517|
-|Geekbench 4 multi core  | 35.420| 35.803|
-
-Benchmarks show \~3.3x higher performance per vCPU compared to EC2.\
-Refer to : [gadgetversus](https://gadgetversus.com/processor/intel-xeon-platinum-8124m-vs-intel-core-i7-1360p/)
-
-### 1.8. Risks & Mitigations
-
-| Risk             | Mitigation                                      |
-| ---------------- | ----------------------------------------------- |
-| Hardware failure | Use a secondary node with Proxmox Backup Server |
-| Power outage     | UPS or planned manual shutdown                  |
-| Overheating      | NUCs are rated for 35 °C continuous operation   |
-| Data loss        | Backup to S3-compatible storage                 |
-| Physical access  | Keep servers in restricted rooms or home labs   |
 
 ## 2. Get started
 
@@ -213,28 +96,22 @@ All open-source components --- reproducible setup from scratch.
 
 ### 2.1. Requirements
 
--   One Proxmox VE 9.0+ host
--   Internet router (for port forwarding VPN traffic)
--   Static IP (for Pritunl)
--   Optional: Cloudflare tunnel for GUI access
+- Proxmox VE 9.0+ host(s)
+- Internet router (for port forwarding VPN traffic)
 
-**Required packages** (auto-installed by setup scripts):
--   `git` - Retrieve the MSL Setup repository (Personal Edition)
--   `ipcalc` - Network address calculation utility
--   `jq` - JSON processing tool
--   `zip` - Archive extraction utility
--   `wget` or `curl` - Cloud-init image download
--   `sha256sum` - Image integrity verification
-    
-**Guest VM packages** (auto-installed during Phase 2):
--   `bind-utils` - `nslookup` for DNS validation
--   `nmap-ncat` - `nc` for UDP port probe
--   `pritunl-openvpn` - OpenVPN package from Pritunl repo (RHEL/AlmaLinux)
+### 2.2. Upgrade
 
-### 2.2. Network Design Considerations
+Direct upgrade from v1.x is not supported.
+To install v2.x, uninstall v1.x first by running `./99_uninstall.sh`, then proceed with the v2.x installation.
 
-You will need to provide the following network addresses, which must be configured appropriately.
-If your environment has no additional subnets other than the one connected to Proxmox VE, you can generally keep the example values below as-is — except for (a) and (b), which should be set according to your actual network to avoid conflicts.
+### 2.3. Network Design Considerations
+
+MSL Setup automatically proposes network addresses, so you do not need to design all of the following values in advance.
+However, because it cannot automatically identify every network address already used in your environment, please make sure that the proposed addresses do not overlap with any existing networks.
+If necessary, you can adjust them by using the custom setup in `00_configNetwork.sh`.
+
+In custom setup, the following network addresses need to be provided. Please configure them appropriately.
+If your environment has no additional subnets other than the one connected to Proxmox VE, you can generally keep the example values below as-is, except for (a) and (b), which should be set according to your actual network to avoid conflicts.
 
 ![Zelogx MSL Setup Network Overview](docs/assets/zelogx-MSL-Setup-withID.svg)
 
@@ -245,14 +122,14 @@ However, all VMs belonging to individual projects (VMnPJxx) are completely isola
 - The “Pritunl mainlan-side IP” configured later must fall within this IP range.
 - Since most internet routers can only perform port forwarding to LAN-side IP addresses, it is recommended that the Proxmox VE host be connected directly under the router’s LAN segment.
 
-#### b. Proxmox PVE’s mainlan IP: (e.g., 192.168.77.7)
+#### b. Proxmox VE host mainlan IP: (e.g., 192.168.77.7)
 - This becomes the destination IP when adding a static route to the Internet router. (Auto-detected, for display)
 
-#### c. vpndmzvn (new): (e.g., 192.168.80.0/24 GW: 192.168.80.1)
+#### c. vpndmzvn (VPN transit network): (e.g., 192.168.80.0/24 GW: 192.168.80.1)
 - Route used by VPN clients to access development project subnets.
 - Requires at least a /30 network.
 
-#### d. Client-distributed IPs: (e.g., 192.168.81.0/24)
+#### d. VPN client address pool: (e.g., 192.168.81.0/24)
 - Separated for wg and ovpn. Example: 192.168.81.2–126/25, 192.168.81.129–254/25
 - Further divided into /28 based on the “number of isolated development segments to be created.”
 - Maximum VPN-capable clients per project is 13. For offshore distributed development, securing more would be better.
@@ -266,7 +143,7 @@ However, all VMs belonging to individual projects (VMnPJxx) are completely isola
 - Example: If the network address assigned to vnetpjxx is 172.16.16.0/20 and you are creating 8 segments, it will be divided accordingly as shown below.
 - VM groups inside vnetpjxx (172.16.16.0/24) can communicate freely within that segment.
 - Firewall settings for these VMs are controlled by Security Groups (SG).
-- These segments are mapped to a Pritunl server instances and organization.
+- Mapped to Pritunl server instances and organizations.
 
 #### g. Pritunl mainlan-side IP: (e.g., 192.168.77.10)
 - This becomes the forwarding destination IP when adding port-forwarding rules on the Internet router.
@@ -278,7 +155,7 @@ However, all VMs belonging to individual projects (VMnPJxx) are completely isola
 - Number of isolated development segments (projects) × 2 = (16)
 
 **Note:**
-- Some routers limit the number of port-forwarding entries. For example, Buffalo routers allow a maximum of 32. Therefore, when deciding value 5, you should also consider your router’s maximum port-forwarding capacity.
+- Some routers limit the number of port-forwarding entries. For example, Buffalo routers allow a maximum of 32. Therefore, when deciding (e), you should also consider your router’s maximum port-forwarding capacity.
 - Also, if you are using IPoE with ND Proxy / MAP-E / DS-Lite, there are restrictions on available ports, so you must check in advance.
 
 ## 3. Known Issues
@@ -300,116 +177,6 @@ They can coexist — by design.
 
 ---
 
-
-### Motivation
-
-#### The Problem: The "Flat Network" Trap in Proxmox
-
-When I needed to share my Proxmox development environment with team members over VPN, I ran into a familiar set of problems:
-
-- **Visibility vs. Privacy**: A typical VPN setup tends to expose too much. I wanted each team member to see their own project VMs, but not my personal lab, other clients' environments, or the host infrastructure.
-- **Management Overhead**: Manually issuing, revoking, and organizing VPN profiles for multiple users across multiple projects does not scale. It’s tedious and error-prone.
-- **The Isolation Gap**: Proxmox is powerful, but achieving true L2 isolation between “tenants” while still keeping VPN access simple usually means hand-rolling SDN + firewall rules. Repeating that setup reliably is hard.
-
-#### The Solution: Building the "Multiverse"
-
-I went looking for a tool that could:
-
-- Spin up a secure, isolated "bubble" (a tenant) per project
-- Attach a dedicated VPN gateway to that bubble
-- Handle the boilerplate around VPN profile management
-
-I couldn’t find it.
-
-So I built **Zelogx MSL Setup**.
-
-Zelogx turns a single Proxmox VE host into a multi-tenant lab provider. It’s aimed at engineers who need to give secure, isolated access to specific resources without exposing the rest of their infrastructure.
-
----
-
-### Architecture
-
-(Refer to the high-resolution network diagram in this repository for full details.)
-
-```plaintext
-+----------------+       +------------------+
-|  VPN Client    | ----> |  Cloudflare /    |
-| (Team Member)  |       |  Internet        |
-+----------------+       +------------------+
-        |                        |
-        | VPN Tunnel (UDP/TCP)   | Port Forwarding
-        v                        v
-+=========================================================================+
-|  Proxmox VE Host (Physical Server)                                      |
-|                                                                         |
-|    +----------------------------------------+                           |
-|    | Pritunl VM (VPN Gateway)               |                           |
-|    |  [OpenVPN Servers]  [WireGuard Servers]|                           |
-|    |         |                  |           |                           |
-|    +---------+------------------+-----------+                           |
-|              | VPN Traffic (Decrypted)                                  |
-|              v                                                          |
-|    +----------------------------------------+                           |
-|    |  SDN Zone: vpndmz (192.168.80.0/24)    |                           |
-|    +----------------------------------------+                           |
-|              |                                                          |
-|              | (Routing & Firewalling)                                  |
-|    +=========v==============================+                           |
-|    | Nftables / Proxmox SDN Engine          |  <-- "Multiverse"         |
-|    | (L2/L3 Isolation Enforcement)          |      Enforcer             |
-|    +=========+====================+=========+                           |
-|              |                    |                                     |
-|    +---------v-------+    +-------v-------+         +-------v-------+   |
-|    | Zone: devpj01   |    | Zone: devpj02 |         | Zone: devpjNN |   |
-|    | [Isolated Lab]  |    | [Isolated Lab]|   ...   | [Isolated Lab]|   |
-|    | 172.16.16.0/24  |    | 172.16.17.0/24|         | 172.16.xx.0/24|   |
-|    +-----------------+    +---------------+         +---------------+   |
-|       | VM1 | VM2 |          | VM1 | VM2 |             | VMs... |       |
-|       +-----+-----+          +-----+-----+             +--------+       |
-|            (🔒)                   (🔒)                      (🔒)         |
-+=========================================================================+
-LEGEND: ---> Traffic Flow, [🔒] Isolated Project Environment
-```
-
----
-
-### Engineering Principles
-
-#### 1. Pre-configuration over Runtime Overhead
-
-Zelogx MSL Setup is designed as a **pre-configuration tool**.
-
-- **No long-running daemons**: All SDN objects, isolation rules, and VPN gateways are provisioned up front.
-- **Static security posture**: Once the setup is complete, the environment is “baked into” Proxmox. There is no separate “Zelogx service” that can crash, drift, or introduce its own attack surface at runtime.
-
-#### 2. 100% Native Proxmox Building Blocks
-
-We try to stick to the “power of boring technology”.
-
-- **Standard features only**: The tool uses native Proxmox VE components — `pvesh`, Proxmox SDN (Simple/VLAN zones), and the built-in nftables integration.
-- **Update-friendly**: There are no custom kernel modules or out-of-tree drivers. You keep getting regular Proxmox updates without carrying extra technical debt.
-
-#### 3. Pritunl Automation (VPN Provisioning)
-
-The VPN side is fully automated using the official Pritunl HTTP API.
-
-During the VPN setup phase, MSL Setup:
-
-1. Boots the Pritunl VM via cloud-init.
-2. Waits for the Pritunl service to become ready.
-3. Uses the Pritunl API (key/secret configured inside the VM) to:
-   - Create one or more **Organizations**
-   - Create the required **Servers** (OpenVPN / WireGuard)
-   - **Attach Organizations to Servers**
-   - **Start** the configured Servers
-
-No web UI automation is involved — everything is provisioned through the documented REST API.
-
-From the Proxmox host’s perspective, the Pritunl VM is treated as a black box VPN gateway:
-- Proxmox SDN and nftables handle routing and isolation.
-- Pritunl’s own API is used only inside that VM to define tunnel endpoints and access control.
-
----
 
 ## Troubleshooting: UDP port forwarding validation failed
 
@@ -482,3 +249,21 @@ You can inspect it manually if needed:
 ssh root@<Pritunl-VM-IP>
 ping <GW IP Address>
 ```
+
+### Security & Design Choices (FAQ)
+
+**Q: How does MSL Setup provide VXLAN gateway failover without requiring enterprise-grade network equipment?**
+
+**A:** MSL Setup v2.0 keeps isolated project networks available across cluster nodes by using automatic VXLAN gateway failover within the Proxmox cluster itself.
+
+---
+
+**Q: Can VM hopping be prevented?**
+
+**A:** Yes, isolation is enforced at the lab (tenant) boundary.
+
+---
+
+**Q: How are API tokens and permissions handled?**
+
+**A:** Zelogx MSL Setup does not use the Proxmox API with tokens. It runs locally on the node and uses the native Proxmox CLI (`pvesh` and related tools) under root.

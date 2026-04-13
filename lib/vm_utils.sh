@@ -122,19 +122,40 @@ select_image_storage() {
 # Description: Find first available VMID starting from given number
 #
 # Main commands/functions used:
-#   - qm status: Check VMID availability
+#   - pvesh: Query cluster-wide VM/CT resources
+#   - jq: Parse VMID list from cluster resources
+#   - qm/pct status: Fallback local availability check
 ################################################################################
 find_available_vmid() {
     local start_vmid="${1:-100}"
     local candidate="$start_vmid"
+    local used_vmids=""
     
     printf "$MSG_VM_VMID_SEARCH\\n" "$start_vmid"
     log_info "Searching for available VMID starting from $start_vmid"
-    
-    while qm status "$candidate" >/dev/null 2>&1; do
-        log_info "  VMID $candidate is in use, trying next..."
-        candidate=$((candidate + 1))
-    done
+
+    # Prefer cluster-wide inventory so IDs used on other nodes are also reserved.
+    if command -v pvesh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+        used_vmids=$(pvesh get /cluster/resources --type vm --output-format json 2>/dev/null \
+            | jq -r '.[] | select(.vmid != null) | .vmid' 2>/dev/null \
+            | sort -n \
+            | tr '\n' ' ' \
+            || true)
+    fi
+
+    if [ -n "$used_vmids" ]; then
+        log_info "Using cluster-wide VM/CT inventory for VMID allocation"
+        while echo " $used_vmids " | grep -q " $candidate "; do
+            log_info "  VMID $candidate is in use in cluster (VM or CT), trying next..."
+            candidate=$((candidate + 1))
+        done
+    else
+        log_warn "Cluster-wide VMID inventory unavailable; falling back to local checks"
+        while qm status "$candidate" >/dev/null 2>&1 || pct status "$candidate" >/dev/null 2>&1; do
+            log_info "  VMID $candidate is in use (local VM or CT), trying next..."
+            candidate=$((candidate + 1))
+        done
+    fi
     
     printf "$MSG_VM_VMID_ALLOCATED\\n" "$candidate"
     log_info "Allocated VMID: $candidate"

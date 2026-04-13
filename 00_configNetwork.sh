@@ -35,7 +35,9 @@ import re
 import shlex
 import subprocess
 import sys
+import termios
 import textwrap
+import tty
 from datetime import datetime
 from typing import Dict, List, Tuple
 from ipaddress import IPv4Network, IPv4Address, ip_address
@@ -256,6 +258,96 @@ MESSAGES = {
     },
 }
 
+CEPH_NOTICE = {
+    LANG_JP: """警告: Cephストレージを検出しました
+MSL Setup は Proxmox Firewall を有効化します。
+**Proxmox のストレージとして Ceph を利用している場合、**既存の通信要件によっては、MSL Setup 実行後にストレージへアクセスできなくなる可能性があります。
+そのような環境では、MSL Setup 実行前に、必要な通信を許可する Datacenter レベルの Firewall ルールを事前に追加しておくことをお勧めします。
+
+以下は一般的な Ceph 構成における参考例です。
+実際に必要な設定は環境ごとに異なるため、詳細はご利用中の構成に合わせて調整してください。
+
+IPSetのサンプル:
+Datacenter -> Firewall -> IPSET -> Create
+Name: ceph_peers
+Datacenter -> Firewall -> IPSET -> ceph_peers -> IP/CIDR Add
+192.168.77.60/32  <-- cephノードのIPアドレスを設定
+192.168.77.61/32  <-- cephノードのIPアドレスを設定
+192.168.77.62/32  <-- cephノードのIPアドレスを設定
+
+FWルールのサンプル:
+Datacenter -> Firewall -> Add
+Enabled  Type  Action  Protocol  Source      Destination  D.Port     Comment
+-------  ----  ------  --------  ----------  -----------  ---------  -------------
+Yes      in    ACCEPT  tcp       ceph_peers  ceph_peers   6800:7300  Ceph OSD
+Yes      in    ACCEPT  tcp       ceph_peers  ceph_peers   6789       Ceph Monitor1
+Yes      in    ACCEPT  tcp       ceph_peers  ceph_peers   3300       Ceph Monitor2
+
+Press any key to continue.""",
+    LANG_EN: """Important Notice: Ceph storage was detected.
+MSL Setup enables the Proxmox Firewall.
+If your Proxmox environment uses Ceph as Proxmox storage, storage access may become unavailable after running MSL Setup, depending on the existing communication requirements.
+In such environments, we recommend adding Datacenter-level firewall rules in advance to allow the required storage communication before running MSL Setup.
+
+The following is a reference example for a typical Ceph configuration.
+Actual requirements may vary depending on your environment, so please adjust the settings to match your existing configuration.
+
+Example IPSet:
+Datacenter -> Firewall -> IPSET -> Create
+Name: ceph_peers
+Datacenter -> Firewall -> IPSET -> ceph_peers -> IP/CIDR Add
+192.168.77.60/32  <-- Replace with your Ceph node IP address
+192.168.77.61/32  <-- Replace with your Ceph node IP address
+192.168.77.62/32  <-- Replace with your Ceph node IP address
+
+Example Rules:
+Datacenter -> Firewall -> Add
+Enabled  Type  Action  Protocol  Source      Destination  D.Port     Comment
+-------  ----  ------  --------  ----------  -----------  ---------  -------------
+Yes      in    ACCEPT  tcp       ceph_peers  ceph_peers   6800:7300  Ceph OSD
+Yes      in    ACCEPT  tcp       ceph_peers  ceph_peers   6789       Ceph Monitor1
+Yes      in    ACCEPT  tcp       ceph_peers  ceph_peers   3300       Ceph Monitor2
+
+Press any key to continue.""",
+}
+
+
+def _wait_for_any_key() -> None:
+    """Wait for a single keypress without requiring Enter."""
+    if not sys.stdin.isatty():
+        return
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    print("", flush=True)
+
+
+def _check_ceph_installed() -> bool:
+    """Return True when `pveceph status` exits successfully."""
+    try:
+        result = subprocess.run(
+            ["pveceph", "status"],
+            cwd=SCRIPT_DIR,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _show_ceph_notice(lang: str) -> None:
+    notice = CEPH_NOTICE.get(lang, CEPH_NOTICE[LANG_EN])
+    print(notice, flush=True)
+    _wait_for_any_key()
+
 
 class BashRunner:
     """Run existing bash logic without modifying shell scripts."""
@@ -355,6 +447,27 @@ CONFIG[NUM_PJ]="8"
 
 # Override slow functions with no-ops for base config collection
 input_port_ranges() {{ :; }}
+
+# Override interactive PT_IG_IP prompt to avoid confirmation loops in non-interactive mode.
+# This prefill path is only used to collect initial defaults for the TUI.
+input_pritunl_mainlan_ip() {{
+    local ml_network="${{CONFIG[ML_CIDR]%/*}}"
+    local base_ip="${{ml_network%.*}}"
+    local candidate="${{base_ip}}.9"
+
+    if is_ip_reachable "$candidate"; then
+        local octet
+        for octet in {{10..253}}; do
+            local next_candidate="${{base_ip}}.${{octet}}"
+            if ! is_ip_reachable "$next_candidate"; then
+                candidate="$next_candidate"
+                break
+            fi
+        done
+    fi
+
+    CONFIG[PT_IG_IP]="$candidate"
+}}
 
 exec 3<&0
 exec 0< <(yes "")
@@ -2787,6 +2900,36 @@ class TUIApp:
                 break
 
 
+def _check_vmbr0_single_ipv4() -> None:
+    """Check that vmbr0 has exactly one IPv4 address.
+    
+    Exit with error if none or multiple IPv4 addresses detected.
+    """
+    result = subprocess.run(
+        ["bash", "-c", "ip -4 -o addr show dev vmbr0 scope global | awk '{print $4}'"],
+        capture_output=True,
+        text=True,
+        cwd=SCRIPT_DIR
+    )
+    ips = [ip.strip() for ip in result.stdout.strip().split('\n') if ip.strip()]
+    
+    if len(ips) == 0:
+        print()
+        print("No IPv4 address detected on vmbr0.")
+        print("MSL Setup cannot safely determine the management IP.")
+        print("Please configure vmbr0 with one IPv4 address and run 00_configNetwork.sh again.")
+        print()
+        sys.exit(1)
+    
+    if len(ips) > 1:
+        print()
+        print("Detected multiple IPv4 addresses on vmbr0.")
+        print("MSL Setup cannot safely determine which address is the intended management IP.")
+        print("Please temporarily remove extra test/migration IPs and run 00_configNetwork.sh again.")
+        print()
+        sys.exit(1)
+
+
 def main() -> int:
     lang = LANG_EN
     if len(sys.argv) > 1:
@@ -2796,6 +2939,12 @@ def main() -> int:
         else:
             print("Usage: ./0101_configNetwork.sh [en|jp]")
             return 1
+
+    # Check vmbr0 has exactly one IPv4 before proceeding
+    _check_vmbr0_single_ipv4()
+
+    if _check_ceph_installed():
+        _show_ceph_notice(lang)
 
     def _run(stdscr: "curses._CursesWindow") -> None:
         app = TUIApp(stdscr, lang)

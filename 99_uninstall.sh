@@ -179,11 +179,33 @@ log_info "Pritunl VM destruction completed"
 echo ""
 
 # ============================================================================
-# Step 3: Restore Network Configuration
+# Step 3: Restore Cluster Configuration
 # ============================================================================
 
 echo "$MSG_UNINSTALL_STEP3"
-log_info "Step 3: Restoring network configuration..."
+log_info "Step 3: Restoring cluster configuration..."
+
+if [ ! -f "0103_clusterSetup.sh" ]; then
+    log_error "0103_clusterSetup.sh not found"
+    echo "$MSG_UNINSTALL_FAILED"
+    die "Required script not found: 0103_clusterSetup.sh"
+fi
+
+if ! bash 0103_clusterSetup.sh "$MSL_LANG" --restore; then
+    log_error "Failed to restore cluster configuration"
+    echo "$MSG_UNINSTALL_FAILED"
+    die "Cluster restoration failed. Check logs for details."
+fi
+
+log_info "Cluster configuration restoration completed"
+echo ""
+
+# ============================================================================
+# Step 4: Restore Network Configuration
+# ============================================================================
+
+echo "$MSG_UNINSTALL_STEP4"
+log_info "Step 4: Restoring network configuration..."
 
 if [ ! -f "0102_setupNetwork.sh" ]; then
     log_error "0102_setupNetwork.sh not found"
@@ -198,6 +220,26 @@ if ! bash 0102_setupNetwork.sh "$MSL_LANG" --restore; then
 fi
 
 log_info "Network configuration restoration completed"
+# echo ""
+
+# # ============================================================================
+# # Step 4: Restore Quota Configuration
+# # ============================================================================
+
+# echo "$MSG_UNINSTALL_STEP4"
+# log_info "Step 4: Restoring quota enforcement settings..."
+
+# if [ -f "0302_quotaSetup.sh" ]; then
+#     if bash 0302_quotaSetup.sh "$MSL_LANG" --restore; then
+#         log_info "Quota enforcement restore completed"
+#     else
+#         log_warn "Quota enforcement restore encountered errors (non-fatal)"
+#         echo "$MSG_QUOTA_UNINSTALL_WARN"
+#     fi
+# else
+#     log_info "0302_quotaSetup.sh not found; skipping quota restore"
+#     echo "$MSG_QUOTA_UNINSTALL_SKIPPED"
+# fi
 echo ""
 
 # ============================================================================

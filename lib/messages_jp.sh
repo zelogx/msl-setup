@@ -44,10 +44,16 @@ MSG_UNINSTALL_CANCELLED="アンインストールがキャンセルされまし�
 MSG_UNINSTALL_STARTING="アンインストール処理を開始します..."
 MSG_UNINSTALL_STEP1="ステップ1: RBAC設定を削除しています..."
 MSG_UNINSTALL_STEP2="ステップ2: Pritunl VMを破棄しています..."
-MSG_UNINSTALL_STEP3="ステップ3: ネットワーク設定を復元しています..."
+MSG_UNINSTALL_STEP3="ステップ3: クラスタ設定を復元しています..."
+MSG_UNINSTALL_STEP4="ステップ4: ネットワーク設定を復元しています..."
+MSG_UNINSTALL_STEP5="ステップ5: Quota設定を復元しています..."
 MSG_ASSUMING_NO_RBAC_OR_NO_CORPORATE_EDITION="RBAC設定の削除をスキップします（Corporate Editionではないか、関連スクリプトが見つかりません）。"
 MSG_UNINSTALL_COMPLETE="アンインストールが正常に完了しました。"
 MSG_UNINSTALL_FAILED="アンインストールに失敗しました。ログを確認してください。"
+MSG_QUOTA_INSTALL_COMPLETE="Quota強制設定のインストールが完了しました。"
+MSG_QUOTA_RESTORE_COMPLETE="Quota強制設定の復元が完了しました。"
+MSG_QUOTA_UNINSTALL_SKIPPED="Quota設定スクリプトが見つからないため、Quota復元をスキップします。"
+MSG_QUOTA_UNINSTALL_WARN="Quota復元でエラーが発生しました（致命的ではありません）。"
 
 # Network discovery messages
 MSG_DISCOVERING_NETWORK="既設ネットワークを探索しています..."

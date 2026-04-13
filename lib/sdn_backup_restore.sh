@@ -65,11 +65,9 @@ _dump_sdn_state() {
         # Datacenter firewall options (enable state, policies)
         log_info "${label_prefix} Firewall Options:"
         pvesh get /cluster/firewall/options --output-format json 2>/dev/null | while IFS= read -r l; do log_info "  $l"; done || true
-        # Host-level firewall rules (v2.0)
-        local node_name
-        node_name=$(hostname)
-        log_info "${label_prefix} Host Firewall Rules (node: $node_name):"
-        pvesh get "/nodes/${node_name}/firewall/rules" --output-format json 2>/dev/null | while IFS= read -r l; do log_info "  $l"; done || true
+        # Datacenter-level firewall rules (v2.0-a step3)
+        log_info "${label_prefix} Datacenter Firewall Rules:"
+        pvesh get "/cluster/firewall/rules" --output-format json 2>/dev/null | while IFS= read -r l; do log_info "  $l"; done || true
         log_info "${label_prefix} kernel routes:"
         ip route show 2>/dev/null | while IFS= read -r l; do log_info "  $l"; done || true
         log_info "${label_prefix} VPN pool specific route:"
@@ -100,9 +98,6 @@ _dump_sdn_state() {
         # Security Group backup removed in v2.0 (no file expected)
         if [[ -f "$backup_dir/firewall_options_initial.json" ]]; then
             log_info "${label_prefix} Firewall Options JSON:"; cat "$backup_dir/firewall_options_initial.json" | while IFS= read -r l; do log_info "  $l"; done || true
-        fi
-        if [[ -f "$backup_dir/host_firewall_rules_initial.json" ]]; then
-            log_info "${label_prefix} Host Firewall Rules JSON:"; cat "$backup_dir/host_firewall_rules_initial.json" | while IFS= read -r l; do log_info "  $l"; done || true
         fi
         if [[ -f "$backup_dir/route_all_initial.txt" ]]; then
             log_info "${label_prefix} all routes snapshot:"; while IFS= read -r l; do log_info "  $l"; done < "$backup_dir/route_all_initial.txt" || true
@@ -227,14 +222,11 @@ _backup_and_log_sdn_state() {
     pvesh get /cluster/firewall/options --output-format json > "$backup_dir/firewall_options_initial.json" 2>/dev/null || echo '{}' > "$backup_dir/firewall_options_initial.json"
     log_info "Firewall Options JSON:"; cat "$backup_dir/firewall_options_initial.json" | while IFS= read -r l; do log_info "  $l"; done
 
-    # Host-level firewall rules (v2.0)
     local node_name
     node_name=$(hostname)
     # Host firewall options (enable, nftables)
     pvesh get "/nodes/${node_name}/firewall/options" --output-format json > "$backup_dir/host_firewall_options_initial.json" 2>/dev/null || echo '{}' > "$backup_dir/host_firewall_options_initial.json"
     log_info "Host Firewall Options JSON (node: $node_name):"; cat "$backup_dir/host_firewall_options_initial.json" | while IFS= read -r l; do log_info "  $l"; done
-    pvesh get "/nodes/${node_name}/firewall/rules" --output-format json > "$backup_dir/host_firewall_rules_initial.json" 2>/dev/null || echo '[]' > "$backup_dir/host_firewall_rules_initial.json"
-    log_info "Host Firewall Rules JSON (node: $node_name):"; cat "$backup_dir/host_firewall_rules_initial.json" | while IFS= read -r l; do log_info "  $l"; done
     
     ip route show > "$backup_dir/route_all_initial.txt" 2>/dev/null || echo "" > "$backup_dir/route_all_initial.txt"
     log_info "All routes:"; while IFS= read -r l; do log_info "  $l"; done < "$backup_dir/route_all_initial.txt" || true
@@ -412,39 +404,48 @@ msl_restore_to_backup() {
     fi
     echo " [OK]"
 
-    # Reconcile host-level firewall rules (v2.0): delete extras, warn on missing, do not recreate
-    log_info "Reconciling host-level firewall rules (delete extras, warn on missing)"
-    echo -n "Deleting extra host FW rules....."
-    if [[ -f "$backup_dir/host_firewall_rules_initial.json" ]]; then
-        local backup_rules_norm current_rules_json backup_rules_norm_list
-        backup_rules_norm=$(jq -r '.[] | del(.pos) | @json' "$backup_dir/host_firewall_rules_initial.json" 2>/dev/null || echo "")
-        current_rules_json=$(pvesh get "/nodes/${node_name}/firewall/rules" --output-format json 2>/dev/null || echo '[]')
-        # Delete rules not present in backup (process in reverse order to avoid position shifts)
-        echo "$current_rules_json" | jq -c '[.[] | {pos, norm:(del(.pos))}] | sort_by(.pos) | reverse | .[]' | while IFS= read -r rule_obj; do
-            local pos norm_rule
-            pos=$(echo "$rule_obj" | jq -r '.pos')
-            norm_rule=$(echo "$rule_obj" | jq -c '.norm')
-            if ! _list_contains "$norm_rule" "$backup_rules_norm"; then
-                log_info "Deleting host firewall rule at position $pos (not in backup)"
-                _pvesh_delete_logged "host firewall rule at position $pos" "/nodes/${node_name}/firewall/rules/$pos"
-                echo -n "."
-            fi
-        done
-        # Warn on missing rules that were in backup
-        backup_rules_norm_list="$backup_rules_norm"
-        if [[ -n "$backup_rules_norm_list" ]]; then
-            local current_rules_norm_after
-            current_rules_norm_after=$(pvesh get "/nodes/${node_name}/firewall/rules" --output-format json 2>/dev/null | jq -r '.[] | del(.pos) | @json' || echo "")
-            while IFS= read -r bnorm; do
-                [[ -z "$bnorm" ]] && continue
-                if ! _list_contains "$bnorm" "$current_rules_norm_after"; then
-                    _report_missing "Host firewall rule" "$bnorm"
-                fi
-            done <<< "$backup_rules_norm_list"
-        fi
-    else
-        log_warn "No host_firewall_rules_initial.json found in backup; leaving current host firewall rules unchanged"
+    # Delete managed datacenter firewall rules created by 0102 (exact comment match)
+    log_info "Deleting managed datacenter firewall rules by exact comment match"
+    echo -n "Deleting managed DC FW rules....."
+    local managed_rule_comments=""
+    local i idx
+    managed_rule_comments+="MSLSetup Allow Spice from external network to DC"$'\n'
+    managed_rule_comments+="MSLSetup Allow ssh from external network to DC"$'\n'
+    managed_rule_comments+="MSLSetup Allow https from external network to DC"$'\n'
+    managed_rule_comments+="MSLSetup Drop devpjs to all private networks"$'\n'
+    managed_rule_comments+="MSLSetup ICMP Prtn VPNDMZ GW"$'\n'
+    managed_rule_comments+="MSLSetup ICMP Prtn DEVPJS"$'\n'
+    managed_rule_comments+="MSLSetup ICMP Prtn MAINLAN ANY"$'\n'
+
+    if [[ -n "${DNS_IP1:-}" ]]; then
+        managed_rule_comments+="MSLSetup Allow DNS UDP to ${DNS_IP1}"$'\n'
+        managed_rule_comments+="MSLSetup Allow DNS TCP to ${DNS_IP1}"$'\n'
     fi
+
+    if [[ -n "${DNS_IP2:-}" ]]; then
+        managed_rule_comments+="MSLSetup Allow DNS UDP to ${DNS_IP2}"$'\n'
+        managed_rule_comments+="MSLSetup Allow DNS TCP to ${DNS_IP2}"$'\n'
+    fi
+
+    if [[ -n "${NUM_PJ:-}" ]]; then
+        for i in $(seq 1 "$NUM_PJ"); do
+            idx=$(printf '%02d' "$i")
+            managed_rule_comments+="MSLSetup Allow intra-vnet PJ${idx}"$'\n'
+        done
+    fi
+
+    local current_rules_json
+    current_rules_json=$(pvesh get "/cluster/firewall/rules" --output-format json 2>/dev/null || echo '[]')
+    echo "$current_rules_json" | jq -c '[.[] | {pos, comment:(.comment // "")}] | sort_by(.pos) | reverse | .[]' | while IFS= read -r rule_obj; do
+        local pos current_comment
+        pos=$(echo "$rule_obj" | jq -r '.pos')
+        current_comment=$(echo "$rule_obj" | jq -r '.comment')
+        if echo "$managed_rule_comments" | grep -Fxq "$current_comment"; then
+            log_info "Deleting managed datacenter firewall rule at position $pos (comment: $current_comment)"
+            _pvesh_delete_logged "managed datacenter firewall rule at position $pos" "/cluster/firewall/rules/$pos"
+            echo -n "."
+        fi
+    done
     echo " [OK]"
 
     local backup_ipsets
