@@ -32,7 +32,8 @@ The following repository contains the **manual setup procedure** corresponding t
 [MSL Setup Basic](https://github.com/zelogx/proxmox-msl-setup-basic/blob/main/build-instructions.md)
 
 See below for architecture diagram.
-At a high level, each project stays isolated at Layer 2, VPN access is provided through the Pritunl VM, and VXLAN gateway failover is handled inside the Proxmox cluster.
+With this architecture, VMs/CTs on any node in the cluster can access the same isolated project network, and workloads running on different nodes behave as if they were connected on a single host.  
+Even if a node failure occurs, communication can continue through gateway failover.
 
 ![Zelogx MSL Setup Network Overview](docs/assets/zelogx-MSL-Setup-cluster.svg)
 

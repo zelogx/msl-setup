@@ -28,7 +28,8 @@ Refer to README.md for English documents.
 MSL Setup のアーキテクチャの背景、設計思想、設計ポリシーについては、[ARCHITECTURE_AND_DESIGN_PRINCIPLES_jp.md](./ARCHITECTURE_AND_DESIGN_PRINCIPLES_jp.md) を参照してください。
 
 以下はアーキテクチャ図。
-全体像としては、各プロジェクトは L2 レベルで分離され、VPN アクセスは Pritunl VM 経由で提供され、VXLAN ゲートウェイのフェイルオーバーは Proxmox クラスタ内で処理されます。
+このアーキテクチャでは、クラスタ環境において、どのノード上の VM/CT でも同じプロジェクトの隔離ネットワークに参加でき、別ノードで動作する VM/CT 同士も、あたかも単一ノード上で接続されているかのように通信できます。  
+さらに、ノード障害が発生した場合でも、ゲートウェイフェイルオーバーにより通信を継続できます。
 ![Zelogx MSL Setup Network Overview](docs/assets/zelogx-MSL-Setup-cluster.svg)
 
 <section id="quickstart">
