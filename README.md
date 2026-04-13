@@ -63,7 +63,13 @@ cd msl-setup
 
 # Phase 2: VPN Setup (Pritunl VM deployment + configuration)
 ./02_vpnSetup.sh en       # Language: en|jp (default en)
+```
+> **Note:** During `02_vpnSetup.sh`, an HTTPS request is sent to the public probe API used by MSL Setup in order to verify reachability to the VPN UDP ports.  
+> This probe operates by sending UDP packets back only to the source global IP address of that HTTPS request, and is not a mechanism that can send packets to arbitrary third-party IP addresses.  
+> This public probe API is operated on a host located in Japan.  
+> This check is intended to detect, at install time, cases where the VPN server cannot be reached externally due to router port-forwarding settings or ISP/network constraints.
 
+```bash
 # Phase 3 (Pro Corporate only): RBAC Self-Care Portal Setup
 ./0301_setupSelfCarePortal.sh en   # Language: en|jp (default en)
 
@@ -85,10 +91,9 @@ mslcm del-node <IP address> # Remove a node from the MSL Setup cluster configura
 > **Note:** The Pritunl VM is NOT automatically registered as an HA resource upon installation.  
 > If you require HA management of the Pritunl VM in a cluster environment, please configure Proxmox HA separately.
 
----
-
 </section>
 
+---
 
 ## 2. Get started
 
@@ -185,6 +190,10 @@ During `02_vpnSetup.sh`, you may encounter an error such as:
 ```bash
 ERROR: UDP port forwarding validation failed
 ```
+This check sends an HTTPS request to the public probe API used by MSL Setup and verifies reachability to the specified VPN UDP ports by having the probe return UDP packets only to the source global IP address of that request.
+
+In other words, this is not a mechanism that can send packets arbitrarily to third-party hosts on the Internet.  
+It is a limited connectivity check designed only to confirm whether the specified ports are reachable at the source global IP address that sent the HTTPS request.
 
 This means that the specified UDP ports for the VPN server could not be reached from outside.  
 In most cases, this is **not** an MSL Setup bug. It is usually caused by **router settings, ISP/network restrictions, or network path issues**.
