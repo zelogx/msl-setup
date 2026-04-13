@@ -25,9 +25,10 @@ Refer to README.md for English documents.
 プロジェクトごとに完全に分離された L2 レベルの開発環境を構築し、VPN 経由で安全にアクセスできるようにします。
 低コストの分散開発、オフショア案件、またはチーム向けプライベートラボのためのプラットフォームです。
 
-MSL Setup のアーキテクチャの背景、設計思想、設計ポリシーについては、[ARCHITECTURE_AND_DESIGN_PRINCIPLES.md](./ARCHITECTURE_AND_DESIGN_PRINCIPLES_jp.md) を参照してください。
+MSL Setup のアーキテクチャの背景、設計思想、設計ポリシーについては、[ARCHITECTURE_AND_DESIGN_PRINCIPLES_jp.md](./ARCHITECTURE_AND_DESIGN_PRINCIPLES_jp.md) を参照してください。
 
 以下はアーキテクチャ図。
+全体像としては、各プロジェクトは L2 レベルで分離され、VPN アクセスは Pritunl VM 経由で提供され、VXLAN ゲートウェイのフェイルオーバーは Proxmox クラスタ内で処理されます。
 ![Zelogx MSL Setup Network Overview](docs/assets/zelogx-MSL-Setup-cluster.svg)
 
 <section id="quickstart">
