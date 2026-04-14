@@ -35,7 +35,7 @@ See below for architecture diagram.
 With this architecture, VMs/CTs on any node in the cluster can access the same isolated project network, and workloads running on different nodes behave as if they were connected on a single host.  
 Even if a node failure occurs, communication can continue through gateway failover.
 
-![Zelogx MSL Setup Network Overview](docs/assets/zelogx-MSL-Setup-cluster.svg)
+![Zelogx MSL Setup Network Overview](docs/assets/zelogx-MSL-Setup-cluster2.svg)
 
 ## 1. Quickstart
 > Please see [**Environmental Integrity & System Impact Report**](https://github.com/zelogx/msl-setup/wiki/Environmental-Integrity-&-System-Impact-Report) if you hesitate to run.<BR>

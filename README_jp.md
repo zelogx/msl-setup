@@ -30,7 +30,7 @@ MSL Setup のアーキテクチャの背景、設計思想、設計ポリシー�
 以下はアーキテクチャ図。
 このアーキテクチャでは、クラスタ環境において、どのノード上の VM/CT でも同じプロジェクトの隔離ネットワークに参加でき、別ノードで動作する VM/CT 同士も、あたかも単一ノード上で接続されているかのように通信できます。  
 さらに、ノード障害が発生した場合でも、ゲートウェイフェイルオーバーにより通信を継続できます。
-![Zelogx MSL Setup Network Overview](docs/assets/zelogx-MSL-Setup-cluster.svg)
+![Zelogx MSL Setup Network Overview](docs/assets/zelogx-MSL-Setup-cluster2.svg)
 
 <section id="quickstart">
 
