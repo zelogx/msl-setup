@@ -47,7 +47,9 @@ I couldn’t find it.
 
 So I built **Zelogx MSL Setup**.
 
-Zelogx turns a single Proxmox VE host into a multi-tenant lab provider. It’s aimed at engineers who need to give secure, isolated access to specific resources without exposing the rest of their infrastructure.
+Zelogx turns Proxmox VE into a multi-tenant lab platform.
+From a single node to a cluster, it enables isolated project networks that can scale seamlessly across multiple hosts while maintaining strict tenant isolation.
+It’s aimed at engineers who need to give secure, isolated access to specific resources without exposing the rest of their infrastructure.
 
 ## Architecture Benefits
 
