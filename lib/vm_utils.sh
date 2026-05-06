@@ -453,6 +453,7 @@ EOF
     log_info "Step 1: Creating VM with basic settings (firewall=1 on NICs)..."
     if ! qm create "$vmid" \
         --name "$vm_name" \
+        --ostype l26 \
         --machine q35 \
         --cpu host \
         --memory 2048 \

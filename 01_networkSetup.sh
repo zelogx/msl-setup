@@ -81,9 +81,11 @@ if [[ "$RESTORE_ONLY" == true ]]; then
     cluster_cmd+=(--restore)
 fi
 
+cluster_restore_cmd=(./0103_clusterSetup.sh "$LANG_ARG" --restore)
+
 if [[ "$RESTORE_ONLY" == true ]]; then
     ################################################################################
-    # Phase 1.1: Cluster Setup Restore (run first in restore mode)
+    # Phase 1.1: Cluster Setup Restore (Restore first - reverse order)
     ################################################################################
     echo ""
     echo "=========================================="
@@ -107,6 +109,73 @@ if [[ "$RESTORE_ONLY" == true ]]; then
         fi
         exit 1
     fi
+
+    ################################################################################
+    # Phase 1.2: Setup Proxmox SDN and Firewall Restore (run after cluster restore)
+    ################################################################################
+    echo ""
+    echo "=========================================="
+    if [[ "$LANG_ARG" == "jp" ]]; then
+        echo "フェーズ 1.2: Proxmox SDN リストア"
+    else
+        echo "Phase 1.2: Proxmox SDN Restore"
+    fi
+    echo "=========================================="
+    echo ""
+
+    if ! "${setup_cmd[@]}"; then
+        if [[ "$LANG_ARG" == "jp" ]]; then
+            echo ""
+            echo "エラー: SDN リストアが失敗しました"
+            echo "詳細はログを確認してください: logs/"
+        else
+            echo ""
+            echo "ERROR: SDN restore failed"
+            echo "Check logs for details: logs/"
+        fi
+        exit 1
+    fi
+
+    ################################################################################
+    # Phase 1 Restore Complete
+    ################################################################################
+    echo ""
+    echo "=========================================="
+    if [[ "$LANG_ARG" == "jp" ]]; then
+        echo "フェーズ 1 完了: ネットワーク設定をバックアップ状態に復元しました"
+    else
+        echo "Phase 1 Complete: Network Configuration Restored to Backup State"
+    fi
+    echo "=========================================="
+    echo ""
+
+    exit 0
+fi
+
+################################################################################
+# Phase 1.1: Cluster Setup Restore (pre-restore before normal setup)
+################################################################################
+echo ""
+echo "=========================================="
+if [[ "$LANG_ARG" == "jp" ]]; then
+    echo "フェーズ 1.1: クラスタ設定リストア"
+else
+    echo "Phase 1.1: Cluster Setup Restore"
+fi
+echo "=========================================="
+echo ""
+
+if ! "${cluster_restore_cmd[@]}"; then
+    if [[ "$LANG_ARG" == "jp" ]]; then
+        echo ""
+        echo "エラー: クラスタ設定リストアが失敗しました"
+        echo "詳細はログを確認してください: logs/"
+    else
+        echo ""
+        echo "ERROR: Cluster setup restore failed"
+        echo "Check logs for details: logs/"
+    fi
+    exit 1
 fi
 
 ################################################################################

@@ -721,18 +721,11 @@ save_config_to_vm_notes() {
         return 0
     fi
     
-    # Read the file content
+    # Read generated file content as-is.
+    # NOTE: Do not run envsubst here because it would also expand literal
+    # MongoDB operators such as "$set" in code examples.
     local config_content
     config_content=$(cat docs/pritunl_config_reference.md)
-    
-    # Perform variable substitution using envsubst-like approach
-    # Export all variables from .env for substitution
-    set -a
-    source .env
-    set +a
-    
-    # Use eval to perform variable substitution
-    config_content=$(echo "$config_content" | envsubst)
     
     # Add setup information at the top
     local setup_key

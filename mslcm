@@ -492,6 +492,54 @@ cleanup_vxlan_peers_ipset_if_empty() {
 }
 
 ################################################################################
+# Function: append_master_entry_to_cluster_env
+# Description: Append MASTER entry to cluster.env if not already present.
+#
+# Main commands/functions used:
+#   - grep: Deduplicate marker lines
+#   - printf: Append record to file
+################################################################################
+append_master_entry_to_cluster_env() {
+    local master_ip="$1"
+    local entry="MASTER=${master_ip}"
+
+    mkdir -p "$STATE_DIR"
+    touch "$CLUSTER_ENV"
+
+    if grep -Fxq "$entry" "$CLUSTER_ENV"; then
+        log_info "MASTER entry already present in cluster.env: ${entry}"
+        return 0
+    fi
+
+    printf '%s\n' "$entry" >> "$CLUSTER_ENV"
+    log_info "Appended MASTER entry to cluster.env: ${entry}"
+}
+
+################################################################################
+# Function: append_backup_entry_to_cluster_env
+# Description: Append BACKUP entry to cluster.env if not already present.
+#
+# Main commands/functions used:
+#   - grep: Deduplicate marker lines
+#   - printf: Append record to file
+################################################################################
+append_backup_entry_to_cluster_env() {
+    local backup_ip="$1"
+    local entry="BACKUP=${backup_ip}"
+
+    mkdir -p "$STATE_DIR"
+    touch "$CLUSTER_ENV"
+
+    if grep -Fxq "$entry" "$CLUSTER_ENV"; then
+        log_info "BACKUP entry already present in cluster.env: ${entry}"
+        return 0
+    fi
+
+    printf '%s\n' "$entry" >> "$CLUSTER_ENV"
+    log_info "Appended BACKUP entry to cluster.env: ${entry}"
+}
+
+################################################################################
 # Function: remove_backup_entry_from_cluster_env
 # Description: Remove BACKUP entry for target node IP from cluster.env.
 #
@@ -518,6 +566,33 @@ remove_backup_entry_from_cluster_env() {
     awk -v line="$target_line" '$0 != line { print }' "$CLUSTER_ENV" > "$tmp_file"
     mv "$tmp_file" "$CLUSTER_ENV"
     log_info "Removed BACKUP entry from cluster.env: ${target_ip}"
+}
+
+################################################################################
+# Function: remove_master_entry_from_cluster_env
+# Description: Remove MASTER entry from cluster.env.
+#
+# Main commands/functions used:
+#   - awk: Filter out matching MASTER line
+#   - mv: Atomically replace cluster.env
+################################################################################
+remove_master_entry_from_cluster_env() {
+    local tmp_file
+
+    if [[ ! -f "$CLUSTER_ENV" ]]; then
+        log_info "cluster.env not found; skipping MASTER entry cleanup"
+        return 0
+    fi
+
+    if ! grep -Fxq "^MASTER=" "$CLUSTER_ENV"; then
+        log_info "cluster.env does not contain MASTER entry; skipping"
+        return 0
+    fi
+
+    tmp_file="$(mktemp "${STATE_DIR}/.cluster.env.tmp.XXXXXX")"
+    awk '$0 !~ /^MASTER=/ { print }' "$CLUSTER_ENV" > "$tmp_file"
+    mv "$tmp_file" "$CLUSTER_ENV"
+    log_info "Removed MASTER entry from cluster.env"
 }
 
 ################################################################################
@@ -1160,6 +1235,8 @@ cmd_enable_cluster() {
     systemctl enable keepalived >/dev/null 2>&1 || true
     systemctl restart keepalived
 
+    append_master_entry_to_cluster_env "$PVE_IP"
+
     log_info "========================================================================="
     log_info "enable-cluster completed."
     log_info "========================================================================="
@@ -1284,6 +1361,8 @@ EOF
 
     update_zone_peers "$target_ip"
 
+    append_backup_entry_to_cluster_env "$target_ip"
+
     log_info "add-node completed for ${target_ip}"
 }
 
@@ -1379,6 +1458,8 @@ cmd_disable_cluster() {
     remove_vrrp_peers_fw_rule
     remove_vxlan_peer_entry "$PVE_IP"
     cleanup_vxlan_peers_ipset_if_empty
+
+    remove_master_entry_from_cluster_env
 
     log_info "disable-cluster completed on local node"
 }

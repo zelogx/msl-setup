@@ -544,8 +544,6 @@ main() {
 
     log_info "$(msg CLUSTER_DETECTED_ENABLE)"
     run_mslcm enable-cluster
-    master_ip="$(resolve_master_ip)"
-    append_cluster_env_record "MASTER=${master_ip}"
 
     status_output="$(get_cluster_status)"
     mapfile -t target_ips < <(collect_add_node_targets "$status_output")
@@ -559,7 +557,6 @@ main() {
         log_info "$(msg LINE_SEP)"
         log_info "$(printf "$(msg RUNNING_CMD)" "./mslcm add-node ${ip}")"
         run_mslcm add-node "$ip"
-        append_cluster_env_record "BACKUP=${ip}"
     done
 
     pjall_cidr="$(resolve_pjall_cidr)"
