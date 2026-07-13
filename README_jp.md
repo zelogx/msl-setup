@@ -43,8 +43,6 @@ MSL Setup のアーキテクチャの背景、設計思想、設計ポリシー�
 rootでPVEへSSHログイン。
 
 ```bash
-apt update -y
-apt install -y git ipcalc jq zip
 
 # Corporate editionの場合
 # Downloadしたzipファイルをscpなどで置いてください。
@@ -52,6 +50,7 @@ unzip msl-setup-pro-1.x.x_corporate.zip    # change x to correct version number
 cd msl-setup-pro-1.x.x_corporate
 
 # Personal editionの場合
+apt install -y git
 git clone https://github.com/zelogx/msl-setup.git
 cd msl-setup
 

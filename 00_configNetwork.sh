@@ -33,11 +33,16 @@ import json
 import os
 import re
 import shlex
+import shutil
+import ssl
 import subprocess
 import sys
 import termios
 import textwrap
 import tty
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from typing import Dict, List, Tuple
 from ipaddress import IPv4Network, IPv4Address, ip_address
@@ -82,8 +87,55 @@ DEFAULT_NETWORK_CIDRS = {
     "PJALL_CIDR": "172.16.16.0/21",
 }
 
+# Default configuration values for Demo environment (overrides DEFAULT_NETWORK_CIDRS when detected by bash logic)
+# DEFAULT_NETWORK_CIDRS = {
+#     "VPNDMZ_CIDR": "192.168.180.0/24",
+#     "VPN_POOL": "192.168.181.0/24",
+#     "PJALL_CIDR": "172.31.16.0/21",
+# }
+
 LANG_EN = "en"
 LANG_JP = "jp"
+UUID_FILE_PATH = os.path.join(SCRIPT_DIR, ".uuid")
+MSL_SYSTEM_UUID = ""
+PROBE_TOKEN_API_URL = "https://msl-setup-probe.zelogx.com/api/v1/get_token"
+
+REQUIRED_CMD_PACKAGE_MAP = {
+    "uuidgen": "uuid-runtime",
+    "ipcalc": "ipcalc",
+    "jq": "jq",
+    "zip": "zip",
+}
+
+PACKAGE_INSTALL_FAILURE_MESSAGES = {
+    LANG_EN: (
+        "Failed to install required packages.\n"
+        "Please check internet connectivity and repository settings "
+        "(for example, no-subscription repository configuration), "
+        "or simply rerun this script after a short wait."
+    ),
+    LANG_JP: (
+        "必要パッケージの導入に失敗しました。\n"
+        "インターネット接続やリポジトリ設定"
+        "（例: no-subscription repository の設定漏れ）を確認してください。"
+        "時間をおいて再実行すると解消する場合もあります。"
+    ),
+}
+
+PACKAGE_INSTALL_PROGRESS_MESSAGES = {
+    LANG_EN: "Installing required packages...",
+    LANG_JP: "必要パッケージをインストール中...",
+}
+
+UUID_SAVE_FAILURE_MESSAGES = {
+    LANG_EN: "Failed to save file ({reason})",
+    LANG_JP: "ファイルの保存に失敗しました（{reason}）",
+}
+
+UUID_GENERATE_FAILURE_MESSAGES = {
+    LANG_EN: "Failed to generate system UUID.",
+    LANG_JP: "システムUUIDの生成に失敗しました。",
+}
 
 MESSAGES = {
     LANG_EN: {
@@ -2920,7 +2972,7 @@ def _check_vmbr0_single_ipv4() -> None:
         print("Please configure vmbr0 with one IPv4 address and run 00_configNetwork.sh again.")
         print()
         sys.exit(1)
-    
+
     if len(ips) > 1:
         print()
         print("Detected multiple IPv4 addresses on vmbr0.")
@@ -2928,6 +2980,133 @@ def _check_vmbr0_single_ipv4() -> None:
         print("Please temporarily remove extra test/migration IPs and run 00_configNetwork.sh again.")
         print()
         sys.exit(1)
+
+
+def _ensure_required_packages(lang: str) -> bool:
+    """Ensure required system packages are installed via apt on Proxmox."""
+    missing_cmds = [cmd for cmd in REQUIRED_CMD_PACKAGE_MAP if shutil.which(cmd) is None]
+    if not missing_cmds:
+        return True
+
+    packages = sorted({REQUIRED_CMD_PACKAGE_MAP[cmd] for cmd in missing_cmds})
+    env = os.environ.copy()
+    env["DEBIAN_FRONTEND"] = "noninteractive"
+
+    print()
+    print(PACKAGE_INSTALL_PROGRESS_MESSAGES.get(lang, PACKAGE_INSTALL_PROGRESS_MESSAGES[LANG_EN]))
+    print()
+
+    try:
+        subprocess.run(
+            ["apt", "update", "-y"],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=SCRIPT_DIR,
+            env=env,
+        )
+        subprocess.run(
+            ["apt", "install", "-y", *packages],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=SCRIPT_DIR,
+            env=env,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr_text = (exc.stderr or "").strip()
+        _mlog("ERROR", f"Failed to install required packages ({' '.join(packages)}): {stderr_text}")
+        print()
+        print(PACKAGE_INSTALL_FAILURE_MESSAGES.get(lang, PACKAGE_INSTALL_FAILURE_MESSAGES[LANG_EN]))
+        print()
+        return False
+
+    still_missing = [cmd for cmd in REQUIRED_CMD_PACKAGE_MAP if shutil.which(cmd) is None]
+    if still_missing:
+        _mlog("ERROR", f"Required commands are still missing after installation: {' '.join(still_missing)}")
+        print()
+        print(PACKAGE_INSTALL_FAILURE_MESSAGES.get(lang, PACKAGE_INSTALL_FAILURE_MESSAGES[LANG_EN]))
+        print()
+        return False
+
+    return True
+
+
+def _load_or_create_system_uuid(lang: str) -> bool:
+    """Load .uuid if exists, otherwise generate and persist a new UUID."""
+    global MSL_SYSTEM_UUID
+
+    if os.path.isfile(UUID_FILE_PATH):
+        try:
+            existing_uuid = ""
+            with open(UUID_FILE_PATH, "r", encoding="utf-8") as f:
+                existing_uuid = f.read().strip()
+            if existing_uuid:
+                MSL_SYSTEM_UUID = existing_uuid
+                os.environ["MSL_UUID"] = MSL_SYSTEM_UUID
+                return True
+        except OSError as exc:
+            _mlog("WARN", f"Failed to read .uuid file; regenerating UUID: {exc}")
+
+    try:
+        result = subprocess.run(
+            ["uuidgen"],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=SCRIPT_DIR,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr_text = (exc.stderr or "").strip()
+        _mlog("ERROR", f"Failed to generate UUID using uuidgen: {stderr_text}")
+        print()
+        print(UUID_GENERATE_FAILURE_MESSAGES.get(lang, UUID_GENERATE_FAILURE_MESSAGES[LANG_EN]))
+        print()
+        return False
+
+    new_uuid = result.stdout.strip()
+    if not new_uuid:
+        _mlog("ERROR", "uuidgen returned empty output")
+        print()
+        print(UUID_GENERATE_FAILURE_MESSAGES.get(lang, UUID_GENERATE_FAILURE_MESSAGES[LANG_EN]))
+        print()
+        return False
+
+    try:
+        with open(UUID_FILE_PATH, "w", encoding="utf-8") as f:
+            f.write(f"{new_uuid}\n")
+    except OSError as exc:
+        reason = str(exc)
+        _mlog("ERROR", f"Failed to save .uuid file: {reason}")
+        print()
+        print(UUID_SAVE_FAILURE_MESSAGES.get(lang, UUID_SAVE_FAILURE_MESSAGES[LANG_EN]).format(reason=reason))
+        print()
+        return False
+
+    MSL_SYSTEM_UUID = new_uuid
+    os.environ["MSL_UUID"] = MSL_SYSTEM_UUID
+    return True
+
+
+def _post_start_probe(system_uuid: str) -> None:
+    """Post startup probe event with UUID. Non-fatal on failures."""
+    src_value = f"{system_uuid}_00_start"
+    query = urllib.parse.urlencode({"src": src_value})
+    endpoint = f"{PROBE_TOKEN_API_URL}?{query}"
+    body = json.dumps({"magic": "ZELOGX"}).encode("utf-8")
+    request = urllib.request.Request(
+        endpoint,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    ssl_context = ssl._create_unverified_context()
+
+    try:
+        with urllib.request.urlopen(request, timeout=8, context=ssl_context) as response:
+            _mlog("INFO", f"Probe token request sent successfully (status={response.status})")
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+        _mlog("WARN", f"Probe token request failed: {exc}")
 
 
 def main() -> int:
@@ -2939,6 +3118,14 @@ def main() -> int:
         else:
             print("Usage: ./0101_configNetwork.sh [en|jp]")
             return 1
+
+    if not _ensure_required_packages(lang):
+        return 1
+
+    if not _load_or_create_system_uuid(lang):
+        return 1
+
+    _post_start_probe(MSL_SYSTEM_UUID)
 
     # Check vmbr0 has exactly one IPv4 before proceeding
     _check_vmbr0_single_ipv4()

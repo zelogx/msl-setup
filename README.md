@@ -44,10 +44,6 @@ Even if a node failure occurs, communication can continue through gateway failov
 
 
 ``` bash
-apt update -y
-apt install -y ipcalc jq zip
-# Place the zip file on the proxmox server using scp or similar.
-
 # In Corporate edition,
 unzip msl-setup-pro-x.x.x_corporate.zip    # change x to correct version number
 cd msl-setup-pro-x.x.x_corporate
@@ -71,6 +67,7 @@ cd msl-setup
 > This probe operates by sending UDP packets back only to the source global IP address of that HTTPS request, and is not a mechanism that can send packets to arbitrary third-party IP addresses.  
 > This public probe API is operated on a host located in Japan.  
 > This check is intended to detect, at install time, cases where the VPN server cannot be reached externally due to router port-forwarding settings or ISP/network constraints.
+> For setup progress tracking, each cluster generates a unique UUID and sends it together with the Install stage ID to zelogx.com located in Japan.  No personal information is included.  zelogx.com retains these records together with the source IP address of the request as logs, and this feature cannot be disabled.
 
 ```bash
 # Phase 3 (Pro Corporate only): RBAC Self-Care Portal Setup
