@@ -885,15 +885,23 @@ if [[ -z "${NUM_PJ:-}" || -z "${MAIN_IF:-}" || -z "${MAIN_VIP:-}" ]]; then
     exit 1
 fi
 
-all_ifaces() {
-    ip -o link show | awk -F': ' '{print $2}' | cut -d'@' -f1 | grep -v '^lo$'
+apply_arp_isolation() {
+    local ifname="$1"
+
+    [ -d "/proc/sys/net/ipv4/conf/${ifname}" ] || return 0
+
+    # Prevent ARP flux: only answer ARP requests for IPs assigned to the
+    # receiving interface.
+    sysctl -w "net.ipv4.conf.${ifname}.arp_ignore=1" >/dev/null || true
+    sysctl -w "net.ipv4.conf.${ifname}.arp_announce=2" >/dev/null || true
 }
 
-garp_cycle() {
-    local target_ip="$1"
-    while IFS= read -r iface; do
-        arping -U -c 1 -I "$iface" "$target_ip" >/dev/null 2>&1 &
-    done < <(all_ifaces)
+garp_one() {
+    local iface="$1"
+    local target_ip="$2"
+
+    [ -d "/sys/class/net/${iface}" ] || return 0
+    arping -U -c 1 -I "$iface" "$target_ip" >/dev/null 2>&1 || true
 }
 
 main_vip_ip="${MAIN_VIP%%/*}"
@@ -903,6 +911,7 @@ case "$ACTION" in
     master)
         log "notify_master start"
         if [[ -n "${VPNDMZ_GW:-}" && -n "${VPNDMZ_CIDR:-}" && "${VPNDMZ_CIDR}" == */* ]]; then
+            apply_arp_isolation "vpndmzvn"
             ip addr replace "${VPNDMZ_GW}/${vpndmz_prefix}" dev "vpndmzvn" || true
             if [[ -n "${VPN_POOL:-}" && -n "${PT_EG_IP:-}" ]]; then
                 ip route replace "${VPN_POOL}" via "${PT_EG_IP}" dev "vpndmzvn"
@@ -916,22 +925,22 @@ case "$ACTION" in
             cidr="${!cidr_var:-}"
             prefix="${cidr#*/}"
             [[ -n "$gw" && -n "$prefix" ]] || continue
+            apply_arp_isolation "vnetpj${idx}"
             ip addr replace "${gw}/${prefix}" dev "vnetpj${idx}" || true
         done
 
         for _ in 1 2 3; do
-            garp_cycle "$main_vip_ip"
+            garp_one "$MAIN_IF" "$main_vip_ip"
             if [[ -n "${VPNDMZ_GW:-}" ]]; then
-                garp_cycle "$VPNDMZ_GW"
+                garp_one "vpndmzvn" "$VPNDMZ_GW"
             fi
             for i in $(seq 1 "$NUM_PJ"); do
                 idx=$(printf '%02d' "$i")
                 gw_var="PJ${idx}_GW"
                 gw="${!gw_var:-}"
                 [[ -n "$gw" ]] || continue
-                garp_cycle "$gw"
+                garp_one "vnetpj${idx}" "$gw"
             done
-            wait
             sleep 0.2
         done
         log "Became MASTER: VIP/GW attached and GARP completed"

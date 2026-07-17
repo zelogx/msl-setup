@@ -160,6 +160,7 @@ configure_mongodb() {
     # Update MongoDB configuration to bind to localhost
     ssh "root@${vm_ip}" bash <<'EOF'
 sed -i 's/^  bindIp:.*/  bindIp: 127.0.0.1/' /etc/mongod.conf
+grep -q '^setParameter:' /etc/mongod.conf || printf '\nsetParameter:\n  diagnosticDataCollectionEnabled: false\n' >> /etc/mongod.conf
 EOF
     
     # Start and enable MongoDB

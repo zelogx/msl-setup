@@ -185,6 +185,7 @@ fi
 if [[ "$RESTORE_ONLY" == true ]]; then
     if [[ "$had_backup" == true ]]; then
         log_info "Restore flag detected; performing restore and exiting"
+        clear_project_vnet_dhcp_ranges
         msl_restore_to_backup
         remove_msl_dc_access_rules "$(hostname)"
         remove_vpn_pool_route_hooks
@@ -192,6 +193,7 @@ if [[ "$RESTORE_ONLY" == true ]]; then
         echo "[SUCCESS] $MSG_SDN_RESTORE_ONLY_DONE"
     else
         log_warn "Restore flag detected, but no backup existed at start; skipping restore"
+        clear_project_vnet_dhcp_ranges
         remove_msl_dc_access_rules "$(hostname)"
         remove_vpn_pool_route_hooks
         remove_project_gateway_hooks
@@ -203,6 +205,7 @@ fi
 # Normal run: only restore if backup existed at start
 if [[ "$had_backup" == true ]]; then
     log_info "Backup existed at start. Restoring to initial state before provisioning..."
+    clear_project_vnet_dhcp_ranges
     msl_restore_to_backup
     remove_msl_dc_access_rules "$(hostname)"
 else
@@ -246,6 +249,7 @@ for i in $(seq 1 "$NUM_PJ"); do
     cidr_var="PJ${idx}_CIDR"
     gw_var="PJ${idx}_GW"
     create_sdn_subnet "${!cidr_var}" "vnetpj${idx}" "-gateway ${!gw_var}"
+    set_vnet_subnet_dhcp_range "vnetpj${idx}" "${!cidr_var}"
 done
 echo " [OK]"
 
@@ -496,6 +500,21 @@ log_info "All routes (final):"
 ip route show 2>/dev/null | while IFS= read -r line; do
     log_info "  $line"
 done
+
+# Install helper command for DHCP CT deployment.
+log_info "Installing msldhcp command to /usr/local/bin..."
+if [[ ! -f "$SCRIPT_ROOT/msldhcp" ]]; then
+    log_error "msldhcp script not found at $SCRIPT_ROOT/msldhcp"
+    exit 1
+fi
+cp -f "$SCRIPT_ROOT/msldhcp" /usr/local/bin/msldhcp
+chmod 0755 /usr/local/bin/msldhcp
+log_info "Installed /usr/local/bin/msldhcp"
+echo "========================================"
+echo "If you need DHCP on a tenant's isolated network, you can add it later:"
+echo "  Ex.) ./msldhcp"
+echo ""
+echo "(It will prompt you to select the tenant VNet and VMID.)"
 
 # Prompt user for router configuration (manual steps)
 echo ""

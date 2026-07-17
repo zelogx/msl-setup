@@ -343,6 +343,151 @@ create_sdn_subnet() {
 }
 
 ################################################################################
+# Function: ipv4_to_int
+# Description: Convert dotted IPv4 string to unsigned integer
+# Main commands/functions used:
+#   - bash arithmetic: Convert octets to 32-bit integer
+################################################################################
+ipv4_to_int() {
+    local ip="$1"
+    local a b c d
+    IFS='.' read -r a b c d <<< "$ip"
+    printf '%u\n' "$(( (a << 24) + (b << 16) + (c << 8) + d ))"
+}
+
+################################################################################
+# Function: int_to_ipv4
+# Description: Convert unsigned integer to dotted IPv4 string
+# Main commands/functions used:
+#   - bash arithmetic: Extract octets from 32-bit integer
+################################################################################
+int_to_ipv4() {
+    local int_ip="$1"
+    local o1 o2 o3 o4
+    o1=$(( (int_ip >> 24) & 255 ))
+    o2=$(( (int_ip >> 16) & 255 ))
+    o3=$(( (int_ip >> 8) & 255 ))
+    o4=$(( int_ip & 255 ))
+    printf '%d.%d.%d.%d\n' "$o1" "$o2" "$o3" "$o4"
+}
+
+################################################################################
+# Function: calculate_project_dhcp_range
+# Description: Calculate DHCP range as host-min to (host-max - 2) for CIDR
+# Main commands/functions used:
+#   - ipcalc: Get host range from CIDR
+#   - ipv4_to_int/int_to_ipv4: Adjust end address by 2
+################################################################################
+calculate_project_dhcp_range() {
+    local cidr="$1"
+    local calc_out host_min host_max
+    local start_int end_int
+
+    calc_out=$(ipcalc "$cidr" 2>/dev/null || true)
+    host_min=$(printf '%s\n' "$calc_out" | awk '/^HostMin:/ {print $2; exit}')
+    host_max=$(printf '%s\n' "$calc_out" | awk '/^HostMax:/ {print $2; exit}')
+
+    if [[ -z "$host_min" || -z "$host_max" ]]; then
+        log_error "Unable to calculate host range from CIDR: $cidr"
+        return 1
+    fi
+
+    start_int=$(ipv4_to_int "$host_min")
+    end_int=$(( $(ipv4_to_int "$host_max") - 2 ))
+
+    if (( end_int < start_int )); then
+        log_error "Calculated DHCP range is invalid for CIDR: $cidr"
+        return 1
+    fi
+
+    printf '%s-%s\n' "$host_min" "$(int_to_ipv4 "$end_int")"
+}
+
+################################################################################
+# Function: set_vnet_subnet_dhcp_range
+# Description: Set DHCP range for a specific VNet subnet
+# Main commands/functions used:
+#   - pvesh set: Update SDN subnet dhcp-range property
+################################################################################
+set_vnet_subnet_dhcp_range() {
+    local vnet="$1"
+    local subnet_cidr="$2"
+    local subnet_id dhcp_range err_out
+    local range_start range_end dhcp_range_param
+
+    dhcp_range=$(calculate_project_dhcp_range "$subnet_cidr") || return 1
+    range_start="${dhcp_range%-*}"
+    range_end="${dhcp_range#*-}"
+    dhcp_range_param="start-address=${range_start},end-address=${range_end}"
+    subnet_id=$(pvesh get "/cluster/sdn/vnets/${vnet}/subnets" --output-format json 2>/dev/null \
+        | jq -r --arg cidr "$subnet_cidr" '.[] | select(.cidr == $cidr) | .subnet' \
+        | head -n1)
+    if [[ -z "$subnet_id" ]]; then
+        subnet_id="${vnet}-${subnet_cidr%/*}-${subnet_cidr#*/}"
+    fi
+
+    log_info "Setting DHCP range on ${vnet}/${subnet_cidr} (subnet-id: ${subnet_id}): ${dhcp_range} (${dhcp_range_param})"
+    if ! err_out=$(pvesh set "/cluster/sdn/vnets/${vnet}/subnets/${subnet_id}" -dhcp-range "$dhcp_range_param" 2>&1); then
+        log_error "Failed to set dhcp-range on ${vnet}/${subnet_cidr}"
+        if [[ -n "$err_out" ]]; then
+            log_error "pvesh error: ${err_out}"
+        fi
+        return 1
+    fi
+
+    return 0
+}
+
+################################################################################
+# Function: clear_vnet_subnet_dhcp_ranges
+# Description: Clear all dhcp-range settings for all subnets in a VNet
+# Main commands/functions used:
+#   - pvesh get/set: Enumerate subnets and remove dhcp-range property
+#   - jq: Parse subnet list
+################################################################################
+clear_vnet_subnet_dhcp_ranges() {
+    local vnet="$1"
+    local subnet subnet_id
+    local subnets
+
+    subnets=$(pvesh get "/cluster/sdn/vnets/${vnet}/subnets" --output-format json 2>/dev/null | jq -r '.[].subnet' 2>/dev/null || true)
+    [[ -n "$subnets" ]] || return 0
+
+    while IFS= read -r subnet; do
+        [[ -n "$subnet" ]] || continue
+        subnet_id="${subnet//\//%2F}"
+
+        if pvesh set "/cluster/sdn/vnets/${vnet}/subnets/${subnet_id}" -delete dhcp-range >/dev/null 2>&1; then
+            log_info "Cleared dhcp-range on ${vnet}/${subnet}"
+        elif pvesh set "/cluster/sdn/vnets/${vnet}/subnets/${subnet_id}" -dhcp-range "" >/dev/null 2>&1; then
+            log_info "Cleared dhcp-range on ${vnet}/${subnet} (fallback)"
+        else
+            log_warn "Failed to clear dhcp-range on ${vnet}/${subnet}; continuing"
+        fi
+    done <<< "$subnets"
+}
+
+################################################################################
+# Function: clear_project_vnet_dhcp_ranges
+# Description: Clear dhcp-range settings from all vnetpjXX subnets
+# Main commands/functions used:
+#   - pvesh get: Enumerate VNets
+#   - jq/grep: Filter vnetpjXX entries
+################################################################################
+clear_project_vnet_dhcp_ranges() {
+    local vnets
+    local vnet
+
+    vnets=$(pvesh get /cluster/sdn/vnets --output-format json 2>/dev/null | jq -r '.[].vnet' 2>/dev/null || true)
+    [[ -n "$vnets" ]] || return 0
+
+    while IFS= read -r vnet; do
+        [[ "$vnet" =~ ^vnetpj[0-9]{2}$ ]] || continue
+        clear_vnet_subnet_dhcp_ranges "$vnet"
+    done <<< "$vnets"
+}
+
+################################################################################
 # Function: persist_vpn_pool_route
 # Description: Legacy cleanup helper for deprecated mslsetup-route hooks
 # Main commands/functions used:
@@ -398,6 +543,15 @@ persist_project_gateway_hooks() {
 
 set -euo pipefail
 
+apply_arp_isolation() {
+    local ifname="$1"
+
+    [ -d "/proc/sys/net/ipv4/conf/${ifname}" ] || return 0
+
+    sysctl -w "net.ipv4.conf.${ifname}.arp_ignore=1" >/dev/null || true
+    sysctl -w "net.ipv4.conf.${ifname}.arp_announce=2" >/dev/null || true
+}
+
 case "${IFACE:-}" in
 EOF
 
@@ -434,14 +588,14 @@ EOF
         fi
         prefix="${cidr#*/}"
 
-        printf '    %s) ip addr replace %s/%s dev %s || true ;;\n' "$iface" "$gw" "$prefix" "$iface" >> "$up_tmp"
+        printf '    %s) apply_arp_isolation %s; ip addr replace %s/%s dev %s || true ;;\n' "$iface" "$iface" "$gw" "$prefix" "$iface" >> "$up_tmp"
         printf '    %s) ip addr del %s/%s dev %s || true ;;\n' "$iface" "$gw" "$prefix" "$iface" >> "$down_tmp"
         valid_count=$((valid_count + 1))
     done
 
     if [[ -n "${VPNDMZ_CIDR:-}" && -n "${VPNDMZ_GW:-}" && "${VPNDMZ_CIDR}" == */* ]]; then
         prefix="${VPNDMZ_CIDR#*/}"
-        printf '    vpndmzvn) ip addr replace %s/%s dev vpndmzvn || true; ip route replace %s via %s dev vpndmzvn ;;\n' "$VPNDMZ_GW" "$prefix" "$VPN_POOL" "$PT_EG_IP" >> "$up_tmp"
+        printf '    vpndmzvn) apply_arp_isolation vpndmzvn; ip addr replace %s/%s dev vpndmzvn || true; ip route replace %s via %s dev vpndmzvn ;;\n' "$VPNDMZ_GW" "$prefix" "$VPN_POOL" "$PT_EG_IP" >> "$up_tmp"
         printf '    vpndmzvn) ip route del %s via %s dev vpndmzvn 2>/dev/null || true; ip addr del %s/%s dev vpndmzvn || true ;;\n' "$VPN_POOL" "$PT_EG_IP" "$VPNDMZ_GW" "$prefix" >> "$down_tmp"
         valid_count=$((valid_count + 1))
     else

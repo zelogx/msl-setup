@@ -335,9 +335,6 @@ MSG_VM_IMAGE_HASH_FAIL="Image hash verification failed. Re-downloading..."
 MSG_VM_IMAGE_STORAGE_MULTIPLE="Multiple image storages found. Which one would you like to use?"
 MSG_VM_IMAGE_STORAGE_SELECT="Selection (1-%s): "
 MSG_VM_IMAGE_STORAGE_INVALID="Invalid selection. Please try again."
-MSG_VM_IMAGE_STORAGE_MULTIPLE="Multiple image storages found. Which one would you like to use?"
-MSG_VM_IMAGE_STORAGE_SELECT="Selection (1-%s): "
-MSG_VM_IMAGE_STORAGE_INVALID="Invalid selection. Please try again."
 
 # VM Creation
 MSG_VM_CREATE_START="Creating Pritunl VM (VMID: %s)..."

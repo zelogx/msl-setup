@@ -1,0 +1,1539 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# deploy-vnet-dhcp-ct-v9-strict-api.sh
+# Deploy a dedicated DHCP-only LXC container for a Proxmox SDN VNet.
+#
+# Tested design target: Proxmox VE 9.x
+# DHCP source: Datacenter > SDN > VNets > Subnets
+#
+# The host extracts only the selected VNet's DHCP settings into:
+#   /var/lib/mslsetup/dhcp/<vnet>/dhcp.env
+# The directory is mounted read-only inside the CT.
+# /etc/pve is used only as the Proxmox SDN source and is not bind-mounted.
+#
+# A systemd path unit watches Proxmox SDN subnet configuration and
+# automatically refreshes the exported DHCP state when the GUI settings change.
+# The CT watches the read-only exported dhcp.env and restarts dnsmasq itself.
+
+PROG="${0##*/}"
+
+VMID=""
+VNET=""
+BRIDGE=""
+NODE="$(hostname -s)"
+ROOTFS_STORAGE=""
+TEMPLATE_STORAGE=""
+TEMPLATE_REGEX='debian-13-standard_.*_amd64\.tar\.(zst|xz|gz)$'
+HOSTNAME_CT=""
+CT_IP=""
+CT_PREFIX=""
+CT_GATEWAY=""
+CT_USER=""
+CT_USER_SPECIFIED="no"
+CT_PASSWORD_ARG=""
+ROOTFS_SIZE_GB="1"
+MEMORY_MB="256"
+SWAP_MB="128"
+CORES="1"
+DNS_SERVER=""
+START_CT="yes"
+UNPRIVILEGED="1"
+FORCE="no"
+
+usage() {
+    cat <<EOF
+Usage:
+        $PROG [--vmid ID] [--vnet VNET] [options]
+
+Main options:
+    --vmid ID                  LXC VMID. If omitted, prompt after VNet selection.
+    --vnet NAME                SDN VNet name, e.g. vnetpj05 (optional)
+
+Authentication / console:
+    --user NAME                Optional debug console user.
+                                                         If omitted, no user/password is created
+                                                         (debug with 'pct exec' only).
+    --password PASS            Required only when --user is specified.
+                                                         Can also be provided via CT_PASSWORD environment variable.
+
+Network:
+  --bridge NAME              CT bridge (default: same as --vnet)
+  --ct-ip IP[/PREFIX]        Static CT IP. If omitted, select a usable address
+                             outside the DHCP pool.
+  --gateway IP               Override subnet gateway
+    --dns-server IPS           CT resolver list for package install.
+                                                         Accepts one IP or a quoted space-separated list.
+                                                         (default: MSL_HOST_DNS_SERVERS or host
+                                                         /etc/resolv.conf nameservers)
+  --node NAME                Deployment node (default: local node)
+
+Storage / template:
+    --rootfs-storage NAME      CT rootfs storage. If omitted, auto/prompt select
+                                                         from storages supporting 'rootdir'.
+    --template-storage NAME    Template storage.
+                                                         If omitted, auto/prompt select from storages
+                                                         supporting 'vztmpl'.
+  --template-regex REGEX     pveam template filename regex
+                             (default: latest Debian 13 standard amd64)
+  --rootfs-size GB           Rootfs size in GB (default: 2)
+
+Resources:
+  --memory MB                RAM (default: 256)
+  --swap MB                  Swap (default: 128)
+  --cores N                  CPU cores (default: 1)
+
+Behavior:
+  --no-start                 Create/configure but leave stopped
+  --privileged               Create a privileged CT (default: unprivileged)
+  --force                    Destroy an existing CT with the same VMID
+  -h, --help                 Show this help
+
+Example:
+    CT_PASSWORD='temporary-console-password' $PROG \
+    --vmid 905 \
+    --vnet vnetpj05 \
+    --rootfs-storage local-lvm \
+    --template-storage local \
+    --user dhcpdebug
+EOF
+}
+
+log()  { printf '[%s] %s\n' "$(date '+%F %T')" "$*"; }
+warn() { printf '[%s] WARNING: %s\n' "$(date '+%F %T')" "$*" >&2; }
+die()  { printf '[%s] ERROR: %s\n' "$(date '+%F %T')" "$*" >&2; exit 1; }
+
+need_cmd() {
+    command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
+}
+
+is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
+
+vmid_resource_type() {
+    local vmid="$1"
+
+    if pct status "$vmid" >/dev/null 2>&1; then
+        printf '%s\n' "lxc"
+        return 0
+    fi
+    if qm status "$vmid" >/dev/null 2>&1; then
+        printf '%s\n' "qemu"
+        return 0
+    fi
+
+    return 1
+}
+
+vmid_is_available() {
+    local vmid="$1"
+
+    ! vmid_resource_type "$vmid" >/dev/null 2>&1
+}
+
+prompt_available_vmid() {
+    local sel sel_normalized sel_num vmid_type
+
+    while true; do
+        printf 'Enter VMID for DHCP CT: ' >&2
+        if ! IFS= read -r sel < /dev/tty; then
+            die "Unable to read VMID from terminal. Specify --vmid explicitly."
+        fi
+
+        # Normalize full-width digits (e.g., ２) to ASCII before numeric checks.
+        sel_normalized=$(printf '%s' "$sel" | sed 'y/０１２３４５６７８９/0123456789/')
+
+        if ! [[ "$sel_normalized" =~ ^[0-9]+$ ]]; then
+            warn "Invalid VMID. Enter digits only."
+            continue
+        fi
+
+        sel_num=$((10#$sel_normalized))
+        if vmid_is_available "$sel_num"; then
+            printf '%s\n' "$sel_num"
+            return 0
+        fi
+
+        vmid_type="$(vmid_resource_type "$sel_num" || true)"
+        warn "VMID ${sel_num} is already in use${vmid_type:+ by ${vmid_type}}. Please choose another VMID."
+    done
+}
+
+storage_supports_content() {
+    local storage_name="$1"
+    local content_type="$2"
+    local storage_json content
+
+    storage_json=$(pvesh get /storage --output-format json 2>/dev/null) || return 1
+    content=$(printf '%s\n' "$storage_json" | jq -r --arg s "$storage_name" '.[] | select(.storage == $s) | (.content // "")' | head -n1)
+    [[ -n "$content" ]] || return 1
+
+    [[ ",$content," =~ ,${content_type}, ]]
+}
+
+select_storage_for_content() {
+    local content_type="$1"
+    local storage_role="$2"
+    local storage_json
+    local choices=()
+    local i sel
+
+    printf '[%s] Querying selectable storages for %s (content: %s)...\n' "$(date '+%F %T')" "$storage_role" "$content_type" >&2
+    storage_json=$(pvesh get /storage --output-format json 2>/dev/null) || true
+    [[ -n "$storage_json" ]] || die "Failed to query storage list via pvesh for ${storage_role}."
+
+    mapfile -t choices < <(printf '%s\n' "$storage_json" | jq -r --arg c "$content_type" '.[] | select((.enabled==1) or (.enabled? == null)) | select((.content // "") | test("(^|,)" + $c + "(,|$)")) | .storage' 2>/dev/null || true)
+
+    if [[ ${#choices[@]} -eq 0 ]]; then
+        die "No available storage found for ${storage_role} (required content type: ${content_type})."
+    elif [[ ${#choices[@]} -eq 1 ]]; then
+        printf '[%s] Auto-selected %s: %s\n' "$(date '+%F %T')" "$storage_role" "${choices[0]}" >&2
+        printf '%s\n' "${choices[0]}"
+        return 0
+    fi
+
+    echo "Multiple storages are available for ${storage_role} (${content_type}):" >&2
+    i=1
+    for s in "${choices[@]}"; do
+        echo "  ${i}) ${s}" >&2
+        i=$((i + 1))
+    done
+
+    while true; do
+        local sel_normalized sel_num
+        printf 'Select %s storage (1-%s): ' "${storage_role}" "${#choices[@]}" >&2
+        if ! IFS= read -r sel < /dev/tty; then
+            warn "Unable to read from terminal for ${storage_role} selection."
+            return 1
+        fi
+
+        # Normalize full-width digits (e.g., ２) to ASCII before numeric checks.
+        sel_normalized=$(printf '%s' "$sel" | sed 'y/０１２３４５６７８９/0123456789/')
+
+        if [[ "$sel_normalized" =~ ^[0-9]+$ ]]; then
+            sel_num=$((10#$sel_normalized))
+            if (( sel_num >= 1 && sel_num <= ${#choices[@]} )); then
+                printf '%s\n' "${choices[$((sel_num - 1))]}"
+                return 0
+            fi
+        fi
+
+        warn "Invalid selection. Please select 1-${#choices[@]}."
+    done
+}
+
+validate_ipv4() {
+    python3 - "$1" <<'PY'
+import ipaddress, sys
+try:
+    ipaddress.IPv4Address(sys.argv[1])
+except Exception:
+    raise SystemExit(1)
+PY
+}
+
+validate_nameserver_list() {
+    local nameserver_list="$1"
+    local nameserver
+
+    read -r -a nameservers <<<"$nameserver_list"
+    ((${#nameservers[@]} > 0)) || return 1
+
+    for nameserver in "${nameservers[@]}"; do
+        validate_ipv4 "$nameserver" || return 1
+    done
+}
+
+load_host_dns_servers() {
+    local resolv_file="/etc/resolv.conf"
+    local host_dns
+
+    [[ -r "$resolv_file" ]] || return 1
+    host_dns=$(awk '/^[[:space:]]*nameserver[[:space:]]+/ {print $2}' "$resolv_file" 2>/dev/null | awk 'NF' | xargs || true)
+    [[ -n "$host_dns" ]] || return 1
+    printf '%s\n' "$host_dns"
+}
+
+resolve_vnet_selection() {
+    local requested_vnet="$1"
+
+    python3 - "$requested_vnet" <<'PY'
+import json
+import subprocess
+import sys
+
+requested = sys.argv[1].strip()
+
+
+def run_json(path):
+    p = subprocess.run(
+        ["pvesh", "get", path, "--output-format", "json"],
+        check=True, text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE
+    )
+    return json.loads(p.stdout)
+
+
+def as_rows(data):
+    if isinstance(data, list):
+        return data
+    if data is None:
+        return []
+    return [data]
+
+
+def first_non_empty(row, keys):
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def parse_dhcp_ranges(row, vnet_name):
+    if "dhcp-range" not in row or row.get("dhcp-range") in (None, []):
+        return []
+    value = row.get("dhcp-range")
+    subnet_id = first_non_empty(row, ("subnet", "id")) or "unknown-subnet"
+    if not isinstance(value, list):
+        raise ValueError(
+            f"Unsupported DHCP range format on {vnet_name}/{subnet_id}: expected dhcp-range to be a list of objects."
+        )
+    out = []
+    for idx, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"Unsupported DHCP range item on {vnet_name}/{subnet_id} at index {idx}: expected object with start-address and end-address."
+            )
+        start = item.get("start-address")
+        end = item.get("end-address")
+        if not isinstance(start, str) or not isinstance(end, str) or not start or not end:
+            raise ValueError(
+                f"Unsupported DHCP range item on {vnet_name}/{subnet_id} at index {idx}: expected string start-address and end-address."
+            )
+        out.append((start, end))
+    return out
+
+
+def load_catalog():
+    vnet_rows = as_rows(run_json("/cluster/sdn/vnets"))
+    zone_rows = as_rows(run_json("/cluster/sdn/zones"))
+
+    zones = {}
+    for row in zone_rows:
+        if not isinstance(row, dict):
+            continue
+        zone_name = first_non_empty(row, ("zone", "zoneid", "id"))
+        if zone_name:
+            zones[zone_name] = row
+
+    catalog = []
+    for row in vnet_rows:
+        if not isinstance(row, dict):
+            continue
+        name = first_non_empty(row, ("vnet", "vnetid", "id"))
+        if not name:
+            continue
+        zone_name = first_non_empty(row, ("zone", "zoneid", "zone-name"))
+        zone_row = zones.get(zone_name, {})
+        zone_type = first_non_empty(zone_row, ("type", "zone_type", "zone-type"))
+
+        dhcp_subnet_count = 0
+        try:
+            subnet_rows = as_rows(run_json(f"/cluster/sdn/vnets/{name}/subnets"))
+        except Exception:
+            subnet_rows = []
+        for subnet_row in subnet_rows:
+            if isinstance(subnet_row, dict) and parse_dhcp_ranges(subnet_row, name):
+                dhcp_subnet_count += 1
+
+        catalog.append({
+            "name": name,
+            "zone_type": zone_type,
+            "dhcp_subnet_count": dhcp_subnet_count,
+            "managed": zone_type == "vxlan" and name.startswith("vnetpj"),
+        })
+
+    return catalog
+
+
+catalog = load_catalog()
+requested_entry = None
+managed = []
+dhcp_ready = []
+
+for entry in catalog:
+    if requested and entry["name"] == requested:
+        requested_entry = entry
+    if entry["managed"]:
+        managed.append(entry)
+        if entry["dhcp_subnet_count"] > 0:
+            dhcp_ready.append(entry)
+
+if requested:
+    if requested_entry is None or not requested_entry["managed"]:
+        raise SystemExit(
+            f"Selected VNet '{requested}' is not an MSL Setup-managed VXLAN zone."
+        )
+    if requested_entry["dhcp_subnet_count"] == 0:
+        raise SystemExit(
+            f"Selected VNet '{requested}' is managed by MSL Setup, but DHCP Range is not configured. Please check Datacenter > SDN and set the DHCP Range."
+        )
+    print(requested_entry["name"])
+    raise SystemExit(0)
+
+if not managed:
+    raise SystemExit(
+        "No VNet matched the MSL Setup VXLAN filter (zone type must be vxlan and VNet name must start with vnetpj). This VNet is not an MSL Setup-managed VXLAN zone."
+    )
+
+if not dhcp_ready:
+    raise SystemExit(
+        "No MSL Setup-managed VXLAN VNet has a configured DHCP range. This VNet is managed by MSL Setup, but DHCP Range is not configured. Please check Datacenter > SDN and set the DHCP Range."
+    )
+
+if len(dhcp_ready) == 1:
+    print(dhcp_ready[0]["name"])
+    raise SystemExit(0)
+
+print("Multiple VNets match the MSL Setup filter:", file=sys.stderr)
+for idx, entry in enumerate(dhcp_ready, start=1):
+    print(f"  {idx}) {entry['name']}", file=sys.stderr)
+
+while True:
+    print(f"Select a VNet (1-{len(dhcp_ready)}): ", end="", file=sys.stderr, flush=True)
+    try:
+        with open("/dev/tty", "r", encoding="utf-8", errors="ignore") as tty:
+            choice = tty.readline().strip()
+    except EOFError:
+        raise SystemExit(1)
+    except OSError:
+        raise SystemExit(1)
+    if choice.isdigit():
+        selected = int(choice)
+        if 1 <= selected <= len(dhcp_ready):
+            print(dhcp_ready[selected - 1]["name"])
+            raise SystemExit(0)
+    print(f"Invalid selection. Please choose 1-{len(dhcp_ready)}.", file=sys.stderr)
+PY
+}
+
+while (($#)); do
+    case "$1" in
+        --vmid)              VMID="${2:?}"; shift 2 ;;
+        --vnet)              VNET="${2:?}"; shift 2 ;;
+        --bridge)            BRIDGE="${2:?}"; shift 2 ;;
+        --node)              NODE="${2:?}"; shift 2 ;;
+        --rootfs-storage)    ROOTFS_STORAGE="${2:?}"; shift 2 ;;
+        --template-storage)  TEMPLATE_STORAGE="${2:?}"; shift 2 ;;
+        --template-regex)    TEMPLATE_REGEX="${2:?}"; shift 2 ;;
+        --hostname)          HOSTNAME_CT="${2:?}"; shift 2 ;;
+        --ct-ip)             CT_IP="${2:?}"; shift 2 ;;
+        --gateway)           CT_GATEWAY="${2:?}"; shift 2 ;;
+        --dns-server)        DNS_SERVER="${2:?}"; shift 2 ;;
+        --user)              CT_USER="${2:?}"; CT_USER_SPECIFIED="yes"; shift 2 ;;
+        --password)          CT_PASSWORD_ARG="${2:?}"; shift 2 ;;
+        --rootfs-size)       ROOTFS_SIZE_GB="${2:?}"; shift 2 ;;
+        --memory)            MEMORY_MB="${2:?}"; shift 2 ;;
+        --swap)              SWAP_MB="${2:?}"; shift 2 ;;
+        --cores)             CORES="${2:?}"; shift 2 ;;
+        --no-start)          START_CT="no"; shift ;;
+        --privileged)        UNPRIVILEGED="0"; shift ;;
+        --force)             FORCE="yes"; shift ;;
+        -h|--help)           usage; exit 0 ;;
+        *)                   die "Unknown argument: $1" ;;
+    esac
+done
+
+[[ $EUID -eq 0 ]] || die "Run as root on a Proxmox VE node."
+CT_PASSWORD_EFFECTIVE="${CT_PASSWORD_ARG:-${CT_PASSWORD:-}}"
+if [[ "$CT_USER_SPECIFIED" == "yes" ]]; then
+    [[ -n "$CT_PASSWORD_EFFECTIVE" ]] || die "--user requires --password or CT_PASSWORD environment variable."
+    [[ "$CT_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "Invalid user name."
+fi
+
+if [[ -n "$VMID" ]]; then
+    is_uint "$VMID" || die "Invalid VMID: $VMID"
+    VMID="$((10#$VMID))"
+fi
+is_uint "$ROOTFS_SIZE_GB" || die "Invalid --rootfs-size."
+is_uint "$MEMORY_MB" || die "Invalid --memory."
+is_uint "$SWAP_MB" || die "Invalid --swap."
+is_uint "$CORES" || die "Invalid --cores."
+if [[ -n "$VNET" ]]; then
+    [[ "$VNET" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]] || die "Invalid VNet name."
+fi
+
+for cmd in pvesh pct qm pveam pvesm jq python3 systemctl; do
+    need_cmd "$cmd"
+done
+
+VNET="$(resolve_vnet_selection "$VNET")"
+
+if [[ -z "$VMID" ]]; then
+    log "--vmid was not specified; prompting for an available VMID after VNet selection."
+    VMID="$(prompt_available_vmid)"
+fi
+
+BRIDGE="${BRIDGE:-$VNET}"
+HOSTNAME_CT="${HOSTNAME_CT:-dhcp-${VNET}}"
+
+if [[ -z "$ROOTFS_STORAGE" ]]; then
+    ROOTFS_STORAGE="$(select_storage_for_content "rootdir" "rootfs")"
+else
+    storage_supports_content "$ROOTFS_STORAGE" "rootdir" \
+        || die "Storage '${ROOTFS_STORAGE}' cannot be used for rootfs (required content type: rootdir)."
+fi
+
+if [[ -z "$TEMPLATE_STORAGE" ]]; then
+    TEMPLATE_STORAGE="$(select_storage_for_content "vztmpl" "template")"
+else
+    storage_supports_content "$TEMPLATE_STORAGE" "vztmpl" \
+        || die "Storage '${TEMPLATE_STORAGE}' cannot be used for template (required content type: vztmpl)."
+fi
+
+pvesm status --storage "$ROOTFS_STORAGE" >/dev/null 2>&1 \
+    || die "Rootfs storage not found or unavailable: $ROOTFS_STORAGE"
+pvesm status --storage "$TEMPLATE_STORAGE" >/dev/null 2>&1 \
+    || die "Template storage not found or unavailable: $TEMPLATE_STORAGE"
+
+# Verify VNet exists.
+pvesh get "/cluster/sdn/vnets/${VNET}" --output-format json >/dev/null 2>&1 \
+    || die "SDN VNet not found: $VNET"
+
+if pct status "$VMID" >/dev/null 2>&1; then
+    if [[ "$FORCE" != "yes" ]]; then
+        die "CT $VMID already exists. Use --force to replace it."
+    fi
+    log "Removing existing CT $VMID..."
+    pct stop "$VMID" --skiplock 1 >/dev/null 2>&1 || true
+    pct destroy "$VMID" --purge 1
+fi
+
+STATE_BASE="/var/lib/mslsetup/dhcp"
+STATE_DIR="${STATE_BASE}/${VNET}"
+STATE_FILE="${STATE_DIR}/dhcp.env"
+OVERRIDE_DIR="${STATE_BASE}/overrides"
+OVERRIDE_FILE="${OVERRIDE_DIR}/${VNET}.env"
+
+# Host-side export is singleton and CT-ID-free.
+# It watches Proxmox SDN subnet configuration once and exports dhcp.env for all
+# VNets that have DHCP ranges. Each DHCP CT watches only its own mounted dhcp.env.
+EXPORTER_SCRIPT="/usr/local/sbin/msl-dhcp-export-all"
+SERVICE_NAME="msl-dhcp-export-all.service"
+PATH_NAME="msl-dhcp-export-all.path"
+
+mkdir -p "$STATE_DIR" "$OVERRIDE_DIR"
+chown root:root /var/lib/mslsetup "$STATE_BASE" "$STATE_DIR" "$OVERRIDE_DIR" 2>/dev/null || true
+chmod 0755 /var/lib/mslsetup "$STATE_BASE" "$STATE_DIR" "$OVERRIDE_DIR"
+
+write_override_file() {
+    local file="$1"
+    local ct_ip_value="$2"
+    local gw_value="$3"
+    local dns_value="$4"
+
+    tmp="$(mktemp "${file}.XXXXXX")"
+    {
+        printf '# Generated by %s. Used by msl-dhcp-export-all.\n' "$PROG"
+        printf 'CT_IP_OVERRIDE=%q\n' "$ct_ip_value"
+        printf 'GW_OVERRIDE=%q\n' "$gw_value"
+        printf 'DHCP_DNS_OVERRIDE=%q\n' "$dns_value"
+    } >"$tmp"
+    chmod 0644 "$tmp"
+
+    if [[ -f "$file" ]] && cmp -s "$tmp" "$file"; then
+        rm -f "$tmp"
+    else
+        mv -f "$tmp" "$file"
+    fi
+}
+
+# Select the CT address before installing the singleton exporter.
+# The exporter itself does not choose CT addresses; it only renders dhcp.env
+# for VNets that already have an override file. This keeps host-side runtime
+# sync deterministic and prevents later DHCP edits from moving the CT address.
+select_tmp="$(mktemp "${STATE_FILE}.select.XXXXXX")"
+trap 'rm -f "$select_tmp"' EXIT
+python3 - "$VNET" "$CT_IP" "$CT_GATEWAY" "$DNS_SERVER" >"$select_tmp" <<'PY_SELECT'
+import ipaddress
+import json
+import subprocess
+import sys
+
+vnet, ct_override, gw_override, dhcp_dns_override = sys.argv[1:5]
+
+
+def run_json(path):
+    p = subprocess.run(
+        ["pvesh", "get", path, "--output-format", "json"],
+        check=True, text=True, stdout=subprocess.PIPE
+    )
+    return json.loads(p.stdout)
+
+
+def parse_dhcp_ranges(row, vnet):
+    if "dhcp-range" not in row or row.get("dhcp-range") in (None, []):
+        return []
+    value = row.get("dhcp-range")
+    subnet_id = str(row.get("subnet") or row.get("id") or "unknown-subnet")
+    if not isinstance(value, list):
+        raise SystemExit(
+            f"Unsupported DHCP range format on {vnet}/{subnet_id}: "
+            "expected dhcp-range to be a list of objects."
+        )
+    out = []
+    for idx, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            raise SystemExit(
+                f"Unsupported DHCP range item on {vnet}/{subnet_id} at index {idx}: "
+                "expected object with start-address and end-address."
+            )
+        start = item.get("start-address")
+        end = item.get("end-address")
+        if not isinstance(start, str) or not isinstance(end, str) or not start or not end:
+            raise SystemExit(
+                f"Unsupported DHCP range item on {vnet}/{subnet_id} at index {idx}: "
+                "expected string start-address and end-address."
+            )
+        out.append((start, end))
+    return out
+
+
+def quote(value):
+    return repr(str(value))
+
+
+data = run_json(f"/cluster/sdn/vnets/{vnet}/subnets")
+if not isinstance(data, list):
+    raise SystemExit(
+        f"Unsupported Proxmox SDN subnet API format for {vnet}: expected a JSON array."
+    )
+
+candidates = []
+for row in data:
+    if not isinstance(row, dict):
+        raise SystemExit(
+            f"Unsupported Proxmox SDN subnet API format for {vnet}: expected each array item to be an object."
+        )
+    ranges = parse_dhcp_ranges(row, vnet)
+    if not ranges:
+        continue
+    cidr = row.get("cidr")
+    if not isinstance(cidr, str) or not cidr:
+        subnet_id = str(row.get("subnet") or row.get("id") or "unknown-subnet")
+        raise SystemExit(
+            f"Unsupported Proxmox SDN subnet API format on {vnet}/{subnet_id}: expected non-empty string cidr."
+        )
+    candidates.append((row, cidr, ranges))
+
+if not candidates:
+    raise SystemExit(
+        f"No DHCP range was found for VNet {vnet}. Configure Datacenter > SDN > VNets > Subnets > DHCP Ranges first."
+    )
+if len(candidates) > 1:
+    raise SystemExit(
+        f"Multiple IPv4 subnets with DHCP ranges exist on {vnet}; this deployer currently requires exactly one."
+    )
+
+row, cidr, ranges = candidates[0]
+net = ipaddress.ip_network(cidr, strict=False)
+if net.version != 4:
+    raise SystemExit("Only IPv4 DHCP is supported by this script.")
+
+gateway = gw_override or row.get("gateway") or row.get("gateway4")
+if not gateway:
+    raise SystemExit(f"No gateway is configured for subnet {cidr}.")
+gateway_ip = ipaddress.ip_address(str(gateway).split("/", 1)[0])
+if gateway_ip not in net:
+    raise SystemExit(f"Gateway {gateway_ip} is outside {net}.")
+
+dhcp_dns = dhcp_dns_override or str(gateway_ip)
+dhcp_dns_ip = ipaddress.ip_address(str(dhcp_dns).split("/", 1)[0])
+if dhcp_dns_ip.version != 4:
+    raise SystemExit("Only IPv4 DNS server is supported by this script.")
+
+normalized = []
+for start, end in ranges:
+    a, b = ipaddress.ip_address(start), ipaddress.ip_address(end)
+    if a.version != 4 or b.version != 4 or a not in net or b not in net or int(a) > int(b):
+        raise SystemExit(f"Invalid DHCP range: {start}-{end}")
+    normalized.append((a, b))
+
+
+def in_pool(ip):
+    return any(int(a) <= int(ip) <= int(b) for a, b in normalized)
+
+if ct_override:
+    iface = ipaddress.ip_interface(
+        ct_override if "/" in ct_override else f"{ct_override}/{net.prefixlen}"
+    )
+    ct_ip = iface.ip
+    prefix = iface.network.prefixlen
+    if iface.network.network_address != net.network_address or prefix != net.prefixlen:
+        raise SystemExit(f"CT address {iface} does not belong to {net}.")
+else:
+    ct_ip = None
+    # Prefer high usable addresses. Many operators place infrastructure IPs
+    # such as gateways and static services near the end of the subnet.
+    for ip in reversed(list(net.hosts())):
+        if ip != gateway_ip and not in_pool(ip):
+            ct_ip = ip
+            break
+    if ct_ip is None:
+        raise SystemExit(f"No address outside DHCP pools is available in {net}.")
+    prefix = net.prefixlen
+
+if ct_ip == gateway_ip:
+    raise SystemExit("CT IP conflicts with the subnet gateway.")
+if in_pool(ct_ip):
+    # Not fatal: the CT-side renderer excludes CT_IP from the effective
+    # dnsmasq range and posts a motd warning. Surface it here too so it is
+    # visible at deploy time, not only inside the CT later.
+    print(
+        f"warning: CT_IP {ct_ip} is inside a DHCP allocation range; "
+        "the CT will exclude it from the effective range at render time.",
+        file=sys.stderr,
+    )
+
+print(f"VNET={quote(vnet)}")
+print(f"CIDR={quote(str(net))}")
+print(f"PREFIX={quote(str(prefix))}")
+print(f"NETMASK={quote(str(net.netmask))}")
+print(f"GATEWAY={quote(str(gateway_ip))}")
+print(f"DHCP_DNS={quote(str(dhcp_dns_ip))}")
+print(f"CT_IP={quote(str(ct_ip))}")
+print("DHCP_RANGES=" + quote(",".join(f"{a}-{b}" for a, b in normalized)))
+PY_SELECT
+chmod 0644 "$select_tmp"
+mv -f "$select_tmp" "$STATE_FILE"
+trap - EXIT
+# shellcheck disable=SC1090
+source "$STATE_FILE"
+
+if [[ -z "$DNS_SERVER" ]]; then
+    if [[ -n "${MSL_HOST_DNS_SERVERS:-}" ]]; then
+        INSTALL_NAMESERVERS="$MSL_HOST_DNS_SERVERS"
+        log "Using DNS servers from environment (MSL_HOST_DNS_SERVERS): $INSTALL_NAMESERVERS"
+    else
+        INSTALL_NAMESERVERS="$(load_host_dns_servers)" || die "No nameserver found in /etc/resolv.conf. Set --dns-server or MSL_HOST_DNS_SERVERS."
+        export MSL_HOST_DNS_SERVERS="$INSTALL_NAMESERVERS"
+        log "Using DNS servers from host /etc/resolv.conf: $INSTALL_NAMESERVERS"
+    fi
+else
+    INSTALL_NAMESERVERS="$DNS_SERVER"
+    log "Using DNS servers from --dns-server: $INSTALL_NAMESERVERS"
+fi
+
+validate_nameserver_list "$INSTALL_NAMESERVERS" || die "Invalid DNS server list: $INSTALL_NAMESERVERS"
+DHCP_DNS_SERVER="${INSTALL_NAMESERVERS%% *}"
+write_override_file "$OVERRIDE_FILE" "$CT_IP" "$CT_GATEWAY" "$DHCP_DNS_SERVER"
+
+cat >"$EXPORTER_SCRIPT" <<'EOF_EXPORTER'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+STATE_BASE='/var/lib/mslsetup/dhcp'
+OVERRIDE_DIR="${STATE_BASE}/overrides"
+REQUIRE_VNET="${REQUIRE_VNET:-}"
+
+mkdir -p "$STATE_BASE" "$OVERRIDE_DIR"
+chmod 0755 "$STATE_BASE" "$OVERRIDE_DIR" 2>/dev/null || true
+
+python3 - "$STATE_BASE" "$OVERRIDE_DIR" "$REQUIRE_VNET" <<'PY_EXPORTER'
+import ipaddress
+import json
+import os
+import pathlib
+import shlex
+import subprocess
+import sys
+import tempfile
+
+state_base = pathlib.Path(sys.argv[1])
+override_dir = pathlib.Path(sys.argv[2])
+require_vnet = sys.argv[3]
+
+
+def run_json(path):
+    p = subprocess.run(
+        ["pvesh", "get", path, "--output-format", "json"],
+        check=True, text=True, stdout=subprocess.PIPE
+    )
+    return json.loads(p.stdout)
+
+
+def parse_dhcp_ranges(row, vnet):
+    """Parse the exact Proxmox API shape observed on PVE 9.x.
+
+    Supported shape only:
+      "dhcp-range": [
+        {"start-address": "x.x.x.x", "end-address": "x.x.x.x"},
+        ...
+      ]
+
+    Missing or empty dhcp-range means this subnet is not served by this
+    DHCP exporter. Any other shape is treated as an unsupported API format.
+    """
+    if "dhcp-range" not in row or row.get("dhcp-range") in (None, []):
+        return []
+
+    value = row.get("dhcp-range")
+    subnet_id = str(row.get("subnet") or row.get("id") or "unknown-subnet")
+    if not isinstance(value, list):
+        raise ValueError(
+            f"Unsupported DHCP range format on {vnet}/{subnet_id}: "
+            "expected dhcp-range to be a list of objects."
+        )
+
+    out = []
+    for idx, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"Unsupported DHCP range item on {vnet}/{subnet_id} at index {idx}: "
+                "expected object with start-address and end-address."
+            )
+        start = item.get("start-address")
+        end = item.get("end-address")
+        if not isinstance(start, str) or not isinstance(end, str) or not start or not end:
+            raise ValueError(
+                f"Unsupported DHCP range item on {vnet}/{subnet_id} at index {idx}: "
+                "expected string start-address and end-address."
+            )
+        out.append((start, end))
+    return out
+
+
+def load_override(vnet):
+    path = override_dir / f"{vnet}.env"
+    data = {
+        "CT_IP_OVERRIDE": "",
+        "GW_OVERRIDE": "",
+        "DHCP_DNS_OVERRIDE": "",
+    }
+    if not path.exists():
+        return data
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key not in data:
+            continue
+        try:
+            parsed = shlex.split(value, posix=True)
+            data[key] = parsed[0] if parsed else ""
+        except ValueError:
+            data[key] = value.strip().strip("'\"")
+    return data
+
+
+def quote(value):
+    return repr(str(value))
+
+
+def discover_vnets():
+    data = run_json("/cluster/sdn/vnets")
+    rows = data if isinstance(data, list) else [data]
+    names = set()
+    for row in rows:
+        if isinstance(row, dict):
+            for key in ("vnet", "vnetid", "id"):
+                value = row.get(key)
+                if value:
+                    names.add(str(value))
+                    break
+        elif isinstance(row, str):
+            names.add(row)
+    return sorted(names)
+
+
+def collect_candidates(vnet):
+    data = run_json(f"/cluster/sdn/vnets/{vnet}/subnets")
+    if not isinstance(data, list):
+        raise ValueError(
+            f"Unsupported Proxmox SDN subnet API format for {vnet}: "
+            "expected a JSON array."
+        )
+
+    candidates = []
+    for row in data:
+        if not isinstance(row, dict):
+            raise ValueError(
+                f"Unsupported Proxmox SDN subnet API format for {vnet}: "
+                "expected each array item to be an object."
+            )
+
+        ranges = parse_dhcp_ranges(row, vnet)
+        if not ranges:
+            continue
+
+        cidr = row.get("cidr")
+        if not isinstance(cidr, str) or not cidr:
+            subnet_id = str(row.get("subnet") or row.get("id") or "unknown-subnet")
+            raise ValueError(
+                f"Unsupported Proxmox SDN subnet API format on {vnet}/{subnet_id}: "
+                "expected non-empty string cidr."
+            )
+
+        candidates.append((row, cidr, ranges))
+
+    return candidates
+
+
+def render_env(vnet, row, cidr, ranges, overrides):
+    net = ipaddress.ip_network(cidr, strict=False)
+    if net.version != 4:
+        raise ValueError("Only IPv4 DHCP is supported by this script.")
+
+    gateway = overrides["GW_OVERRIDE"] or row.get("gateway") or row.get("gateway4")
+    if not gateway:
+        raise ValueError(f"No gateway is configured for subnet {cidr}.")
+    gateway_ip = ipaddress.ip_address(str(gateway).split("/", 1)[0])
+    if gateway_ip not in net:
+        raise ValueError(f"Gateway {gateway_ip} is outside {net}.")
+
+    dhcp_dns = overrides["DHCP_DNS_OVERRIDE"] or str(gateway_ip)
+    dhcp_dns_ip = ipaddress.ip_address(str(dhcp_dns).split("/", 1)[0])
+    if dhcp_dns_ip.version != 4:
+        raise ValueError("Only IPv4 DNS server is supported by this script.")
+
+    normalized = []
+    for start, end in ranges:
+        a, b = ipaddress.ip_address(start), ipaddress.ip_address(end)
+        if a.version != 4 or b.version != 4 or a not in net or b not in net or int(a) > int(b):
+            raise ValueError(f"Invalid DHCP range: {start}-{end}")
+        normalized.append((a, b))
+
+    def in_pool(ip):
+        return any(int(a) <= int(ip) <= int(b) for a, b in normalized)
+
+    ct_override = overrides["CT_IP_OVERRIDE"]
+    if not ct_override:
+        raise ValueError(
+            f"No CT_IP_OVERRIDE is configured for {vnet}. "
+            "Create the DHCP CT for this VNet before exporting dhcp.env."
+        )
+
+    iface = ipaddress.ip_interface(
+        ct_override if "/" in ct_override else f"{ct_override}/{net.prefixlen}"
+    )
+    ct_ip = iface.ip
+    prefix = iface.network.prefixlen
+    if iface.network.network_address != net.network_address or prefix != net.prefixlen:
+        raise ValueError(f"CT address {iface} does not belong to {net}.")
+
+    if ct_ip == gateway_ip:
+        raise ValueError("CT IP conflicts with the subnet gateway.")
+    if in_pool(ct_ip):
+        # Not fatal: export continues with the current DHCP ranges as-is.
+        # The CT-side renderer excludes CT_IP from the effective dnsmasq
+        # range and posts its own motd warning. Aborting the export here
+        # would instead leave this VNet's dhcp.env silently stale after a
+        # later GUI DHCP-range edit.
+        print(
+            f"warning: {vnet}: CT_IP {ct_ip} is inside a DHCP allocation "
+            "range; exporting anyway, the CT will exclude it at render time.",
+            file=sys.stderr,
+        )
+
+    lines = [
+        f"VNET={quote(vnet)}",
+        f"CIDR={quote(str(net))}",
+        f"PREFIX={quote(str(prefix))}",
+        f"NETMASK={quote(str(net.netmask))}",
+        f"GATEWAY={quote(str(gateway_ip))}",
+        f"DHCP_DNS={quote(str(dhcp_dns_ip))}",
+        f"CT_IP={quote(str(ct_ip))}",
+        "DHCP_RANGES=" + quote(",".join(f"{a}-{b}" for a, b in normalized)),
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def write_if_changed(vnet, content):
+    state_dir = state_base / vnet
+    state_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(state_dir, 0o755)
+    state_file = state_dir / "dhcp.env"
+
+    old = state_file.read_text(encoding="utf-8") if state_file.exists() else None
+    if old == content:
+        print(f"unchanged: {vnet}")
+        return False
+
+    fd, tmp_name = tempfile.mkstemp(prefix="dhcp.env.", dir=str(state_dir), text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.chmod(tmp_name, 0o644)
+        os.replace(tmp_name, state_file)
+        print(f"updated: {vnet}")
+        return True
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+
+
+errors = []
+exported = set()
+for vnet in discover_vnets():
+    try:
+        overrides = load_override(vnet)
+        if not overrides["CT_IP_OVERRIDE"]:
+            if vnet == require_vnet:
+                errors.append(f"No CT_IP_OVERRIDE is configured for required VNet {vnet}.")
+            continue
+
+        candidates = collect_candidates(vnet)
+        if not candidates:
+            if vnet == require_vnet:
+                errors.append(f"No DHCP range was found for VNet {vnet}. Configure Datacenter > SDN > VNets > Subnets > DHCP Ranges first.")
+            continue
+        if len(candidates) > 1:
+            msg = f"Multiple IPv4 subnets with DHCP ranges exist on {vnet}; this deployer currently requires exactly one."
+            if vnet == require_vnet:
+                errors.append(msg)
+            else:
+                print(f"warning: {msg}", file=sys.stderr)
+            continue
+
+        row, cidr, ranges = candidates[0]
+        content = render_env(vnet, row, cidr, ranges, overrides)
+        write_if_changed(vnet, content)
+        exported.add(vnet)
+    except Exception as e:
+        msg = f"{vnet}: {e}"
+        if vnet == require_vnet:
+            errors.append(msg)
+        else:
+            print(f"warning: {msg}", file=sys.stderr)
+
+if require_vnet and require_vnet not in exported and not errors:
+    errors.append(f"No DHCP export was produced for required VNet {require_vnet}.")
+
+if errors:
+    for e in errors:
+        print(f"error: {e}", file=sys.stderr)
+    raise SystemExit(1)
+PY_EXPORTER
+EOF_EXPORTER
+chmod 0750 "$EXPORTER_SCRIPT"
+
+# Initial export using the persisted CT address override.
+REQUIRE_VNET="$VNET" "$EXPORTER_SCRIPT" >/dev/null
+# shellcheck disable=SC1090
+source "$STATE_FILE"
+
+[[ -n "${CT_IP:-}" && -n "${PREFIX:-}" && -n "${GATEWAY:-}" && -n "${DHCP_RANGES:-}" ]] \
+    || die "Generated DHCP state is incomplete."
+
+log "Selected subnet: $CIDR"
+log "DHCP range(s): $DHCP_RANGES"
+log "CT address: ${CT_IP}/${PREFIX}"
+log "Gateway: $GATEWAY"
+
+# Locate or download the latest matching template.
+# Do not use only `pvesm path <storage>:vztmpl/<name>` as an existence check;
+# on some PVE/storage combinations it can resolve a theoretical path even when
+# the template file is not actually present. `pveam list <storage>` is the
+# authoritative local-template list for this purpose.
+log "Refreshing appliance template index..."
+pveam update >/dev/null
+
+find_local_template() {
+    pveam list "$TEMPLATE_STORAGE" 2>/dev/null       | awk '{print $1}'       | sed -n 's#^.*/##p'       | grep -E "$TEMPLATE_REGEX"       | sort -V       | tail -n 1 || true
+}
+
+local_template_name="$(find_local_template)"
+
+if [[ -n "$local_template_name" ]]; then
+    template_name="$local_template_name"
+    log "Using cached CT template: $template_name"
+else
+    mapfile -t available_templates < <(
+        pveam available --section system           | awk '{print $2}'           | grep -E "$TEMPLATE_REGEX"           | sort -V
+    )
+    ((${#available_templates[@]} > 0))         || die "No template matched regex: $TEMPLATE_REGEX"
+
+    template_name="${available_templates[-1]}"
+    log "Downloading CT template: $template_name"
+    pveam download "$TEMPLATE_STORAGE" "$template_name"         || die "pveam download failed for $template_name on storage $TEMPLATE_STORAGE"
+
+    local_template_name="$(find_local_template)"
+    [[ "$local_template_name" == "$template_name" ]]         || die "Template download verification failed. Expected $template_name, found ${local_template_name:-none}."
+fi
+
+template_volid="${TEMPLATE_STORAGE}:vztmpl/${template_name}"
+pveam list "$TEMPLATE_STORAGE" | awk '{print $1}' | grep -qx ".*/${template_name}"     || die "Template volume is not registered in pveam list: $template_volid"
+
+if [[ "$UNPRIVILEGED" == "1" ]]; then
+    log "CT privilege mode: unprivileged (nesting=1,keyctl=0)"
+else
+    warn "CT privilege mode: privileged (--privileged was specified)"
+fi
+
+# pct command-line password is intentionally avoided; set it via chpasswd later.
+log "Creating CT $VMID..."
+pct create "$VMID" "$template_volid" \
+    --hostname "$HOSTNAME_CT" \
+    --ostype debian \
+    --arch amd64 \
+    --unprivileged "$UNPRIVILEGED" \
+    --features nesting=1,keyctl=0 \
+    --cores "$CORES" \
+    --memory "$MEMORY_MB" \
+    --swap "$SWAP_MB" \
+    --rootfs "${ROOTFS_STORAGE}:${ROOTFS_SIZE_GB}" \
+    --net0 "name=eth0,bridge=${BRIDGE},ip=${CT_IP}/${PREFIX},gw=${GATEWAY},firewall=0,type=veth" \
+    --nameserver "$INSTALL_NAMESERVERS" \
+    --onboot 1 \
+    --startup "order=20,up=15,down=15" \
+    --description "MSL Setup dedicated DHCP server for ${VNET}. No SSH. dnsmasq DHCP only; nftables permits inbound UDP/67 only."
+
+# Read-only mount containing only this VNet's exported DHCP settings.
+pct set "$VMID" --mp0 "${STATE_DIR},mp=/opt/msl-dhcp-source,ro=1"
+
+log "Starting CT for package installation..."
+pct start "$VMID"
+
+# Wait for systemd and network.
+for _ in $(seq 1 60); do
+    if pct exec "$VMID" -- systemctl is-system-running --wait >/dev/null 2>&1; then
+        break
+    fi
+    sleep 2
+done
+
+log "Checking CT network and DNS reachability..."
+pct exec "$VMID" -- ip -4 addr show dev eth0 || true
+pct exec "$VMID" -- ip -4 route show || true
+pct exec "$VMID" -- cat /etc/resolv.conf || true
+
+# Probe each configured nameserver and prioritize reachable ones first.
+read -r -a dns_candidates <<<"$INSTALL_NAMESERVERS"
+reachable_dns=()
+unreachable_dns=()
+
+for dns_ip in "${dns_candidates[@]}"; do
+    if pct exec "$VMID" -- bash -lc "
+set -Eeuo pipefail
+orig=\$(mktemp)
+cp /etc/resolv.conf \"\$orig\"
+trap 'cp \"\$orig\" /etc/resolv.conf; rm -f \"\$orig\"' EXIT
+{
+  echo '# temporary resolver probe'
+  echo 'nameserver ${dns_ip}'
+  echo 'options timeout:1 attempts:1'
+} >/etc/resolv.conf
+timeout 15 getent hosts deb.debian.org >/dev/null 2>&1
+" >/dev/null 2>&1; then
+        reachable_dns+=("$dns_ip")
+        log "Reachable DNS detected in CT: $dns_ip"
+    else
+        unreachable_dns+=("$dns_ip")
+        warn "DNS did not answer from CT within 15s: $dns_ip"
+    fi
+done
+
+if ((${#reachable_dns[@]} > 0)); then
+    ordered_dns=("${reachable_dns[@]}" "${unreachable_dns[@]}")
+    INSTALL_NAMESERVERS="${ordered_dns[*]}"
+
+    log "Applying DNS server order for CT: $INSTALL_NAMESERVERS"
+    pct set "$VMID" --nameserver "$INSTALL_NAMESERVERS" >/dev/null 2>&1 || true
+    pct exec "$VMID" -- bash -s -- "${ordered_dns[@]}" <<'EOF_DNS_ORDER'
+set -Eeuo pipefail
+{
+  echo '# --- BEGIN PVE ---'
+  for ns in "$@"; do
+    echo "nameserver $ns"
+  done
+  echo '# --- END PVE ---'
+} >/etc/resolv.conf
+EOF_DNS_ORDER
+else
+    warn "No configured DNS server answered within 15s during probe; keeping the original resolver order."
+fi
+
+dns_ok="no"
+for _ in $(seq 1 12); do
+    if pct exec "$VMID" -- timeout 15 getent hosts deb.debian.org >/dev/null 2>&1; then
+        dns_ok="yes"
+        break
+    fi
+    sleep 2
+done
+
+if [[ "$dns_ok" != "yes" ]]; then
+    warn "DNS lookup from CT did not succeed within the timeout."
+    warn "Current CT resolver:"
+    pct exec "$VMID" -- cat /etc/resolv.conf || true
+    warn "Testing gateway reachability..."
+    pct exec "$VMID" -- timeout 5 ping -c 1 "$GATEWAY" || true
+    warn "Testing public IP reachability..."
+    pct exec "$VMID" -- timeout 5 ping -c 1 1.1.1.1 || true
+    die "The CT cannot resolve deb.debian.org. Try --dns-server <reachable DNS>, or check VNet gateway/NAT/firewall."
+fi
+
+log "Installing dnsmasq and nftables..."
+pct exec "$VMID" -- bash -lc '
+set -Eeuo pipefail
+export DEBIAN_FRONTEND=noninteractive
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+apt-get -o Acquire::Retries=3 update
+apt-get install -y --no-install-recommends dnsmasq nftables ca-certificates
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+'
+
+if [[ "$CT_USER_SPECIFIED" == "yes" ]]; then
+    # Create user and passwords without exposing the password in process arguments inside CT.
+    password_b64="$(printf '%s' "$CT_PASSWORD_EFFECTIVE" | base64 -w0)"
+    pct exec "$VMID" -- bash -s <<EOF_USERS
+set -Eeuo pipefail
+password=\$(printf '%s' '$password_b64' | base64 -d)
+printf 'root:%s\n' "\$password" | chpasswd
+if ! id '$CT_USER' >/dev/null 2>&1; then
+    useradd --create-home --shell /bin/bash '$CT_USER'
+fi
+printf '%s:%s\n' '$CT_USER' "\$password" | chpasswd
+unset password
+EOF_USERS
+    unset password_b64
+    log "Configured root password and debug user: $CT_USER"
+else
+    log "No --user specified; skipping root/debug user password configuration (use pct exec for debugging)."
+fi
+unset CT_PASSWORD_EFFECTIVE CT_PASSWORD_ARG CT_PASSWORD
+
+# Install renderer. It always reads the bind-mounted source read-only.
+pct exec "$VMID" -- bash -s <<'EOF_RENDER'
+set -Eeuo pipefail
+
+mkdir -p /etc/dnsmasq.d
+mkdir -p /opt/msl-dhcp-source /etc/dnsmasq.d
+cat >/usr/local/sbin/msl-render-dnsmasq <<'SCRIPT'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SOURCE=/opt/msl-dhcp-source/dhcp.env
+OUT=/etc/dnsmasq.d/msl-vnet-dhcp.conf
+
+[[ -r "$SOURCE" ]] || {
+    echo "DHCP source is not readable: $SOURCE" >&2
+    exit 1
+}
+
+# shellcheck disable=SC1090
+source "$SOURCE"
+
+: "${CIDR:?}"
+: "${PREFIX:?}"
+: "${NETMASK:?}"
+: "${GATEWAY:?}"
+: "${DHCP_DNS:?}"
+: "${CT_IP:?}"
+: "${DHCP_RANGES:?}"
+
+tmp="$(mktemp "${OUT}.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+
+WARN_DIR=/run/msl-dhcp
+WARN_FILE=${WARN_DIR}/warning
+MOTD_FILE=/etc/motd.d/msl-dhcp-warning
+mkdir -p "$WARN_DIR"
+mkdir -p /etc/motd.d
+rm -f "$WARN_FILE"
+if [[ -d /etc/motd.d ]]; then
+    rm -f "$MOTD_FILE"
+fi
+
+ip2int() {
+    local IFS=. a b c d
+    read -r a b c d <<<"$1"
+    printf '%u\n' $(( (a << 24) + (b << 16) + (c << 8) + d ))
+}
+
+int2ip() {
+    local n=$1
+    printf '%u.%u.%u.%u\n' \
+        $(( (n >> 24) & 255 )) \
+        $(( (n >> 16) & 255 )) \
+        $(( (n >> 8) & 255 )) \
+        $(( n & 255 ))
+}
+
+append_warning() {
+    local message="$1"
+    printf '%s\n' "$message" >>"$WARN_FILE"
+    echo "WARNING: $message" >&2
+    logger -t msl-dhcp -- "WARNING: $message" || true
+}
+
+emit_range() {
+    local start_n=$1 end_n=$2
+    (( start_n <= end_n )) || return 0
+    echo "dhcp-range=$(int2ip "$start_n"),$(int2ip "$end_n"),${NETMASK},12h"
+}
+
+ct_n=$(ip2int "$CT_IP")
+effective_count=0
+conflict_count=0
+
+{
+    echo '# Generated from Proxmox SDN settings. Do not edit.'
+    echo '# If CT_IP overlaps with a DHCP pool, the renderer excludes CT_IP from the effective dnsmasq range.'
+    echo 'port=0'
+    echo 'interface=eth0'
+    echo 'bind-dynamic'
+    echo 'except-interface=lo'
+    echo 'dhcp-authoritative'
+    echo 'dhcp-rapid-commit'
+    echo 'log-dhcp'
+    echo 'dhcp-option=option:router,'"$GATEWAY"
+    echo 'dhcp-option=option:dns-server,'"$DHCP_DNS"
+    IFS=',' read -r -a ranges <<<"$DHCP_RANGES"
+    for range in "${ranges[@]}"; do
+        start="${range%-*}"
+        end="${range#*-}"
+        start_n=$(ip2int "$start")
+        end_n=$(ip2int "$end")
+        if (( start_n > end_n )); then
+            echo "Invalid DHCP range: ${start}-${end}" >&2
+            exit 1
+        fi
+
+        if (( ct_n < start_n || ct_n > end_n )); then
+            emit_range "$start_n" "$end_n"
+            ((effective_count+=1))
+            continue
+        fi
+
+        ((conflict_count+=1))
+        echo "# WARNING: CT_IP ${CT_IP} was inside DHCP range ${start}-${end}; excluded from effective range."
+        append_warning "CT_IP ${CT_IP} is inside DHCP range ${start}-${end}; excluded it from the effective dnsmasq DHCP range. Reserve the DHCP CT IP outside the Proxmox SDN DHCP pool."
+
+        if (( start_n <= ct_n - 1 )); then
+            emit_range "$start_n" "$((ct_n - 1))"
+            ((effective_count+=1))
+        fi
+        if (( ct_n + 1 <= end_n )); then
+            emit_range "$((ct_n + 1))" "$end_n"
+            ((effective_count+=1))
+        fi
+    done
+} >"$tmp"
+
+if (( conflict_count > 0 )); then
+    {
+        echo 'MSL DHCP warning'
+        echo
+        cat "$WARN_FILE"
+    } >"${WARN_FILE}.tmp"
+    mv -f "${WARN_FILE}.tmp" "$WARN_FILE"
+    chmod 0644 "$WARN_FILE"
+    if [[ -d /etc/motd.d ]]; then
+        cp -f "$WARN_FILE" "$MOTD_FILE"
+        chmod 0644 "$MOTD_FILE"
+    fi
+fi
+
+if (( effective_count == 0 )); then
+    append_warning "No effective DHCP range remains after excluding CT_IP ${CT_IP}. dnsmasq will run, but this VNet has no DHCP addresses to lease."
+fi
+
+chmod 0644 "$tmp"
+mv -f "$tmp" "$OUT"
+trap - EXIT
+
+dnsmasq --test
+SCRIPT
+chmod 0755 /usr/local/sbin/msl-render-dnsmasq
+
+cat >/etc/systemd/system/msl-render-dnsmasq.service <<'UNIT'
+[Unit]
+Description=Render dnsmasq configuration from read-only Proxmox SDN export
+Before=dnsmasq.service
+RequiresMountsFor=/opt/msl-dhcp-source
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/msl-render-dnsmasq
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+cat >/usr/local/sbin/msl-apply-dnsmasq <<'SCRIPT'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+/usr/local/sbin/msl-render-dnsmasq
+systemctl restart dnsmasq
+SCRIPT
+chmod 0755 /usr/local/sbin/msl-apply-dnsmasq
+
+cat >/etc/systemd/system/msl-apply-dnsmasq.service <<'UNIT'
+[Unit]
+Description=Apply updated DHCP export to dnsmasq
+RequiresMountsFor=/opt/msl-dhcp-source
+After=msl-render-dnsmasq.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/msl-apply-dnsmasq
+UNIT
+
+cat >/etc/systemd/system/msl-dhcp-source.path <<'UNIT'
+[Unit]
+Description=Watch read-only DHCP export and refresh dnsmasq
+RequiresMountsFor=/opt/msl-dhcp-source
+
+[Path]
+# Watch both the file and the directory. The host updates dhcp.env with an
+# atomic rename, so watching the directory makes rename-based updates visible.
+PathChanged=/opt/msl-dhcp-source/dhcp.env
+PathModified=/opt/msl-dhcp-source/dhcp.env
+PathChanged=/opt/msl-dhcp-source
+PathModified=/opt/msl-dhcp-source
+Unit=msl-apply-dnsmasq.service
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+mkdir -p /etc/systemd/system/dnsmasq.service.d
+cat >/etc/systemd/system/dnsmasq.service.d/10-msl-source.conf <<'DROPIN'
+[Unit]
+Requires=msl-render-dnsmasq.service
+After=msl-render-dnsmasq.service
+DROPIN
+EOF_RENDER
+
+# Harden firewall: input UDP/67 only. DNS is disabled in dnsmasq (port=0).
+pct exec "$VMID" -- bash -s <<'EOF_FW'
+set -Eeuo pipefail
+
+cat >/etc/nftables.conf <<'NFT'
+#!/usr/sbin/nft -f
+flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        iifname "lo" accept
+        ct state established,related accept
+
+        # DHCP client -> server. Source can be 0.0.0.0 and destination broadcast.
+        iifname "eth0" udp sport 68 udp dport 67 accept
+
+        # Everything else, including SSH, ICMP and IPv6 input, is dropped.
+        counter drop
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}
+NFT
+
+systemctl enable nftables
+systemctl restart nftables
+
+# Ensure no SSH server is present/enabled.
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+systemctl disable --now ssh.service sshd.service ssh.socket postfix.service exim4.service 2>/dev/null || true
+apt-get purge -y openssh-server ssh postfix exim4-base exim4-daemon-light 2>/dev/null || true
+apt-get autoremove -y 2>/dev/null || true
+
+systemctl daemon-reload
+systemctl enable msl-render-dnsmasq.service
+systemctl enable msl-dhcp-source.path
+systemctl enable dnsmasq.service
+/usr/local/sbin/msl-render-dnsmasq
+systemctl restart dnsmasq
+systemctl start msl-dhcp-source.path
+EOF_FW
+
+# Host-side singleton export after SDN Apply. The host unit only updates
+# /var/lib/mslsetup/dhcp/<vnet>/dhcp.env files; each CT watches its own mount and
+# restarts dnsmasq itself. Do not create per-VNet or per-VMID host units.
+# The trigger is /etc/network/interfaces.d/sdn, not /etc/pve/sdn/subnets.cfg,
+# so DHCP CTs reflect applied SDN configuration, not GUI-pending changes.
+if [[ ! -f "/etc/systemd/system/${SERVICE_NAME}" ]]; then
+    cat >"/etc/systemd/system/${SERVICE_NAME}" <<EOF_SERVICE
+[Unit]
+Description=Export Proxmox SDN DHCP settings for all MSL DHCP VNets
+
+[Service]
+Type=oneshot
+ExecStart=${EXPORTER_SCRIPT}
+EOF_SERVICE
+fi
+
+if [[ ! -f "/etc/systemd/system/${PATH_NAME}" ]]; then
+    cat >"/etc/systemd/system/${PATH_NAME}" <<EOF_PATH
+[Unit]
+Description=Watch Proxmox SDN applied configuration for MSL DHCP exports
+
+[Path]
+PathChanged=/etc/network/interfaces.d/sdn
+PathModified=/etc/network/interfaces.d/sdn
+Unit=${SERVICE_NAME}
+
+[Install]
+WantedBy=multi-user.target
+EOF_PATH
+fi
+
+systemctl daemon-reload
+systemctl enable --now "$PATH_NAME"
+
+# Validate.
+log "Validating services and listening sockets..."
+pct exec "$VMID" -- systemctl is-active --quiet nftables
+pct exec "$VMID" -- systemctl is-active --quiet dnsmasq
+pct exec "$VMID" -- dnsmasq --test
+pct exec "$VMID" -- nft list ruleset
+pct exec "$VMID" -- ss -lntup
+
+if [[ "$START_CT" != "yes" ]]; then
+    log "Stopping CT because --no-start was specified..."
+    pct stop "$VMID"
+fi
+
+cat <<EOF_DONE
+
+Deployment completed.
+
+  CT VMID       : $VMID
+  Hostname      : $HOSTNAME_CT
+  VNet / bridge : $VNET / $BRIDGE
+  CT address    : ${CT_IP}/${PREFIX}
+  Gateway       : $GATEWAY
+  DHCP ranges   : $DHCP_RANGES
+  Config source : $STATE_FILE
+  Config mount  : /opt/msl-dhcp-source (read-only)
+  Inbound FW    : UDP/67 only
+  SSH           : not installed
+
+Useful checks:
+  pct console $VMID
+  pct exec $VMID -- systemctl status dnsmasq nftables
+  pct exec $VMID -- journalctl -u dnsmasq -f
+  pct exec $VMID -- systemctl status msl-dhcp-source.path msl-apply-dnsmasq.service
+  pct exec $VMID -- nft list ruleset
+  systemctl status msl-dhcp-export-all.path
+
+When the DHCP range is changed in the Proxmox SDN GUI, the host path unit
+refreshes the read-only export. The CT watches /opt/msl-dhcp-source/dhcp.env and restarts dnsmasq automatically.
+EOF_DONE

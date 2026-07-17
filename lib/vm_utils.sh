@@ -113,6 +113,44 @@ select_image_storage() {
     fi
 }
 
+################################################################################
+# Function: check_orphan_cloudinit_volumes
+# Description: Detect detached/orphaned cloud-init volumes for a VMID before
+#              creating a new VM and stop if storage cleanup is required.
+#
+# Main commands/functions used:
+#   - pvesm list: List storage volumes filtered by VMID
+#   - awk/sed: Parse volume identifiers
+################################################################################
+check_orphan_cloudinit_volumes() {
+    local vmid="$1"
+    local storage="$2"
+
+    if qm status "$vmid" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local orphan_vols
+    orphan_vols=$(pvesm list "$storage" --vmid "$vmid" 2>/dev/null | awk 'NR>1 {print $1}')
+
+    if [ -n "$orphan_vols" ]; then
+        log_error "VMID ${vmid} is free, but storage volumes already exist on ${storage}:"
+        while IFS= read -r vol; do
+            [ -n "$vol" ] || continue
+            log_error "  - $vol"
+        done <<< "$orphan_vols"
+
+        log_error "MSL Setup will not delete detached/orphaned volumes automatically."
+        log_error "If these volumes are no longer needed, remove them manually, for example:"
+        while IFS= read -r vol; do
+            [ -n "$vol" ] || continue
+            log_error "  pvesm free $vol"
+        done <<< "$orphan_vols"
+
+        die "Storage volume conflict detected. Please clean up the orphaned volume or choose another VMID."
+    fi
+}
+
 # Note: Do NOT run `select_image_storage` at source time here.
 # Selection should be performed by the caller (e.g. 02_deploy_pritunl.sh)
 # so that scripts can control when interactive prompts or pvesm calls occur.
@@ -373,6 +411,8 @@ create_pritunl_vm() {
     local vm_name="$2"
     local image_path="$3"
     local ssh_pubkey_file="$4"
+
+    check_orphan_cloudinit_volumes "$vmid" "$IMAGE_STORAGE"
     
     printf "$MSG_VM_CREATE_START\\n" "$vmid"
     log_info "Creating Pritunl VM: VMID=$vmid, Name=$vm_name"
