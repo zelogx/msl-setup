@@ -85,11 +85,29 @@ mslcm enable-cluster        # MSL Setupをクラスタ対応に昇格する
 mslcm disable-cluster       # MSL Setupをシングルノードに降格する
 mslcm add-node <IPアドレス> # MSL Setupのクラスタ設定にノードを追加する
 mslcm del-node <IPアドレス> # MSL Setupのクラスタ設定からノードを削除する
+
+# (任意）テナントDHCP配布コマンド
+# ProxmoxのSDN(VXLAN zone)はまだDHCPをサポートしていないため、
+# msldhcpは各テナント(vnetpjXX)専用のDHCP配布用CTをデプロイします
+# VulnHubイメージなど、静的IP割り当てを前提としないゲストVM/CTを使う場合にのみ必要です
+# DHCPが不要なテナントには何もインストールされません
+msldhcp                     # 対話形式でテナント(VNet)とVMIDを選択し、DHCP配布用CTを作成する
+msldhcp --vmid <VMID> --vnet <VNet名>  # 非対話で指定して実行する場合
+
 ```
 
 > **注意:** インストール完了時点では、Pritunl VM は自動的に HA リソースとして登録されません。  
 > クラスタ運用で Pritunl VM の HA 管理が必要な場合は、別途 Proxmox HA の設定を行ってください。
 
+> **msldhcpについての補足:**
+> - 対象は「VXLAN zoneかつvnetpj*」のVNetのみです。DHCP Rangeは`0102_setupNetwork.sh`実行時に自動設定されるため、
+>   通常は追加設定なしでそのまま使えます。
+> - DHCP配布レンジは Datacenter > SDN > VNets > (対象VNet) > Subnets > DHCP Ranges で確認・変更できます。
+>   デフォルトではサブネット内の使用可能アドレスのうち、ゲートウェイ(最終アドレス)とDHCP配布用CT用(その1つ前)の
+>   2つを除いた範囲が割り当てられます(例: 172.19.16.0/24なら172.19.16.1-172.19.16.252、
+>   .253はCT用、.254はゲートウェイ)。
+> - CT rootfs/templateストレージが複数ある環境では、対話形式で選択を求められます。
+> - デバッグ用ユーザーは作成されません。CT内を確認する場合は `pct exec <VMID> -- bash` を使用してください。
 </section>
 
 
@@ -201,6 +219,9 @@ Proxmox VEが接続しているサブネットワーク以外にセグメント�
    SVGベースのネットワーク図の配色は、ProxmoxのGUIテーマ（Light/Dark）には**連動しません**。  
    代わりに、OS／ブラウザ側の `prefers-color-scheme` 設定に従って描画されます。  
    そのため、OSやブラウザがライトテーマの場合は、Proxmox GUIをダークテーマにしていても図はライトテーマ相当の配色で表示される場合があります（その逆も同様です）。
+
+- **Pritunl VM再作成時のエラー**
+   手動でVMからディスクをデタッチした状態での再インストール時、orphan volumeが残ることがある（対処法はエラーメッセージに表示するようにしました）
 
 ## 5. あとがき
 

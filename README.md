@@ -86,11 +86,30 @@ mslcm enable-cluster        # Promote MSL Setup to a cluster-enabled configurati
 mslcm disable-cluster       # Revert MSL Setup to a single-node configuration
 mslcm add-node <IP address> # Add a node to the MSL Setup cluster configuration
 mslcm del-node <IP address> # Remove a node from the MSL Setup cluster configuration
+
+# (Optional) Tenant DHCP deployment command
+# Proxmox SDN (VXLAN zone) does not yet support DHCP,
+# so msldhcp deploys a dedicated DHCP CT for each tenant (vnetpjXX).
+# This is only required when using guest VM/CT images that do not assume static IP assignment,
+# such as VulnHub images.
+# Nothing is installed for tenants that do not need DHCP.
+msldhcp                     # Interactive mode: select a tenant (VNet) and VMID to create a DHCP CT.
+msldhcp --vmid <VMID> --vnet <VNetName>  # Run non-interactively with explicit arguments.
 ```
 
 > **Note:** The Pritunl VM is NOT automatically registered as an HA resource upon installation.  
 > If you require HA management of the Pritunl VM in a cluster environment, please configure Proxmox HA separately.
 
+> **Additional Notes for msldhcp:**
+> - Only VNets that match "VXLAN zone and vnetpj*" are supported. DHCP ranges are automatically set when `0102_setupNetwork.sh` runs,
+>   so in most cases you can use it without extra configuration.
+> - DHCP ranges can be viewed and changed at Datacenter > SDN > VNets > (target VNet) > Subnets > DHCP Ranges.
+>   By default, the assigned range excludes two usable addresses in the subnet: the gateway (last address)
+>   and the DHCP CT address (one before the gateway).
+>   Example: for 172.19.16.0/24, the DHCP range is 172.19.16.1-172.19.16.252,
+>   where .253 is reserved for the CT and .254 is the gateway.
+> - If multiple CT rootfs/template storages are available, you will be prompted to choose interactively.
+> - No debug user is created. To inspect inside the CT, use `pct exec <VMID> -- bash`.
 </section>
 
 ---
@@ -169,6 +188,9 @@ However, all VMs belonging to individual projects (VMnPJxx) are completely isola
     The color scheme of SVG-based network diagrams does **not** follow the Proxmox GUI theme (Light/Dark).  
     Instead, it respects the OS / browser `prefers-color-scheme` setting.  
     As a result, when your OS or browser is set to light mode, the diagram may appear with light-theme colors even if the Proxmox GUI is using the dark theme (and vice versa).
+
+- **Error when recreating a Pritunl VM**
+   When reinstalling after manually detaching a disk from the VM, an orphan volume may remain (the workaround is now shown in the error message).
 
 ## 4. Why This Design Still Matters
 
