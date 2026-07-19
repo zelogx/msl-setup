@@ -160,6 +160,27 @@ remove_msl_dc_access_rules() {
 }
 
 ################################################################################
+# Function: remove_msl_project_inet_drop_rules
+# Description: Remove per-project internet egress DROP rules by comment
+#
+# Main commands/functions used:
+#   - get_rule_pos_by_comment: Resolve firewall rule position by comment
+#   - pvesh delete: Delete datacenter firewall rule
+################################################################################
+remove_msl_project_inet_drop_rules() {
+    local i idx comment pos
+    for i in $(seq 1 "$NUM_PJ"); do
+        idx=$(printf '%02d' "$i")
+        comment="MSLSetup Disallow internet access for PJ${idx}"
+        pos=$(get_rule_pos_by_comment "$(hostname)" "$comment")
+        if [[ -n "$pos" && "$pos" != "null" ]]; then
+            log_info "Deleting datacenter firewall rule at position $pos (comment: $comment)"
+            pvesh delete "/cluster/firewall/rules/$pos" >/dev/null 2>&1 || log_warn "Failed to delete datacenter firewall rule: $comment"
+        fi
+    done
+}
+
+################################################################################
 # SDN設定バックアップ・リストア (moved to lib/sdn_backup_restore.sh)
 ################################################################################
 backup_dir="sdn_backup"
@@ -188,6 +209,7 @@ if [[ "$RESTORE_ONLY" == true ]]; then
         clear_project_vnet_dhcp_ranges
         msl_restore_to_backup
         remove_msl_dc_access_rules "$(hostname)"
+        remove_msl_project_inet_drop_rules
         remove_vpn_pool_route_hooks
         remove_project_gateway_hooks
         echo "[SUCCESS] $MSG_SDN_RESTORE_ONLY_DONE"
@@ -195,6 +217,7 @@ if [[ "$RESTORE_ONLY" == true ]]; then
         log_warn "Restore flag detected, but no backup existed at start; skipping restore"
         clear_project_vnet_dhcp_ranges
         remove_msl_dc_access_rules "$(hostname)"
+        remove_msl_project_inet_drop_rules
         remove_vpn_pool_route_hooks
         remove_project_gateway_hooks
         echo "[SUCCESS] $MSG_SDN_BACKUP_START"
@@ -360,6 +383,16 @@ else
 fi
 
 # Base DROP rule (always)
+# Per-project internet egress DROP rules (added before private-range DROP)
+for i in $(seq "$NUM_PJ" -1 1); do
+    idx=$(printf '%02d' "$i")
+    log_info "  DROP rule: FORWARD DROP +sdn/vnetpj${idx}-all → any"
+    pvesh create "/cluster/firewall/rules" \
+        -action DROP -type forward -source "+sdn/vnetpj${idx}-all" -enable 0 \
+        -comment "MSLSetup Disallow internet access for PJ${idx}" >/dev/null 2>&1 || log_warn "Failed to add internet DROP rule for PJ${idx}"
+    echo -n "."
+done
+
 log_info "  DROP rule: FORWARD DROP +dc/devpjs → +dc/all_private_ip"
 pvesh create "/cluster/firewall/rules" \
     -action DROP -type forward -source "+dc/devpjs" -dest "+dc/all_private_ip" -enable 1 \
