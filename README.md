@@ -63,11 +63,16 @@ cd msl-setup
 # Phase 2: VPN Setup (Pritunl VM deployment + configuration)
 ./02_vpnSetup.sh en       # Language: en|jp (default en)
 ```
-> **Note:** During `02_vpnSetup.sh`, an HTTPS request is sent to the public probe API used by MSL Setup in order to verify reachability to the VPN UDP ports.  
-> This probe operates by sending UDP packets back only to the source global IP address of that HTTPS request, and is not a mechanism that can send packets to arbitrary third-party IP addresses.  
-> This public probe API is operated on a host located in Japan.  
-> This check is intended to detect, at install time, cases where the VPN server cannot be reached externally due to router port-forwarding settings or ISP/network constraints.
-> For setup progress tracking, each cluster generates a unique UUID and sends it together with the Install stage ID to zelogx.com located in Japan.  No personal information is included.  zelogx.com retains these records together with the source IP address of the request as logs, and this feature cannot be disabled.
+> [!NOTE]
+> About `02_vpnSetup.sh`
+>
+> * The Pritunl VM provides VPN-based remote access to VMs within each tenant. If you prefer to establish access using a different method (such as Tailscale), you can skip running this script. In that case, you are responsible for implementing appropriate security measures for the tenant environment separately.
+> * The Pritunl VM is not automatically registered as an HA resource upon completion of the installation. If you need to manage the Pritunl VM with Proxmox HA in a clustered environment, configure Proxmox HA separately.
+> * To verify the reachability of the UDP port used by the VPN, an HTTPS request is sent to the public probe API provided by MSL Setup. This is intended to detect during installation whether the VPN server is externally unreachable due to router port forwarding settings or the characteristics of the network connection.
+> * The only data sent to the probe is the UDP port number to be checked. Only the source public IP address and its UDP port number are retained in the logs.
+> * The probe operates by returning UDP packets only to the global IP address from which the probe request originated. It does not provide any mechanism for sending packets to an arbitrary third-party IP address.
+> * The public probe API is operated on a host located in Japan.
+
 
 ```bash
 # Phase 3 (Pro Corporate only): RBAC Self-Care Portal Setup
@@ -97,19 +102,16 @@ msldhcp                     # Interactive mode: select a tenant (VNet) and VMID 
 msldhcp --vmid <VMID> --vnet <VNetName>  # Run non-interactively with explicit arguments.
 ```
 
-> **Note:** The Pritunl VM is NOT automatically registered as an HA resource upon installation.  
-> If you require HA management of the Pritunl VM in a cluster environment, please configure Proxmox HA separately.
+> [!NOTE]
+> **Additional Notes on `msldhcp`:**
+>
+> * This applies only to VNets that are both in a VXLAN zone and named `vnetpj*`. The DHCP range is automatically configured when `0102_setupNetwork.sh` is executed, so no additional configuration is normally required.
+> * The DHCP allocation range can be viewed and modified under `Datacenter > SDN > VNets > (Target VNet) > Subnets > DHCP Ranges`.
+>   By default, the available address range within the subnet is assigned, excluding two addresses: the gateway address (the last address) and the address immediately preceding it, which is reserved for the DHCP server CT.
+>   For example, for `172.19.16.0/24`, the DHCP range is `172.19.16.1-172.19.16.252`, `.253` is reserved for the DHCP server CT, and `.254` is reserved for the gateway.
+> * If multiple CT rootfs/template storage locations are available, you will be prompted to select one interactively.
+> * No debug user is created. To inspect the contents of the CT, use `pct exec <VMID> -- bash`.
 
-> **Additional Notes for msldhcp:**
-> - Only VNets that match "VXLAN zone and vnetpj*" are supported. DHCP ranges are automatically set when `0102_setupNetwork.sh` runs,
->   so in most cases you can use it without extra configuration.
-> - DHCP ranges can be viewed and changed at Datacenter > SDN > VNets > (target VNet) > Subnets > DHCP Ranges.
->   By default, the assigned range excludes two usable addresses in the subnet: the gateway (last address)
->   and the DHCP CT address (one before the gateway).
->   Example: for 172.19.16.0/24, the DHCP range is 172.19.16.1-172.19.16.252,
->   where .253 is reserved for the CT and .254 is the gateway.
-> - If multiple CT rootfs/template storages are available, you will be prompted to choose interactively.
-> - No debug user is created. To inspect inside the CT, use `pct exec <VMID> -- bash`.
 </section>
 
 ---
