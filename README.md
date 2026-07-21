@@ -66,7 +66,7 @@ cd msl-setup
 > [!NOTE]
 > About `02_vpnSetup.sh`
 >
-> * The Pritunl VM provides VPN-based remote access to VMs within each tenant. If you prefer to establish access using a different method (such as Tailscale), you can skip running this script. In that case, you are responsible for implementing appropriate security measures for the tenant environment separately.
+> * The Pritunl VM provides VPN-based remote access to VMs within each tenant. If you prefer to establish an access path using a different method (such as Tailscale or a jump host), you can skip running this script. In that case, please provide a separate access path to each tenant (`vnetpjXX`) and ensure that appropriate security measures are implemented to protect the tenant boundaries.
 > * The Pritunl VM is not automatically registered as an HA resource upon completion of the installation. If you need to manage the Pritunl VM with Proxmox HA in a clustered environment, configure Proxmox HA separately.
 > * To verify the reachability of the UDP port used by the VPN, an HTTPS request is sent to the public probe API provided by MSL Setup. This is intended to detect during installation whether the VPN server is externally unreachable due to router port forwarding settings or the characteristics of the network connection.
 > * The only data sent to the probe is the UDP port number to be checked. Only the source public IP address and its UDP port number are retained in the logs.
