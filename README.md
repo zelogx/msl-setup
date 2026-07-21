@@ -17,9 +17,7 @@ By automatically attaching a dedicated VPN to each tenant, it enables authorized
 
 © 2025 Zelogx. Zelogx™ and the Zelogx logo are trademarks of the Zelogx Project. All other marks are property of their respective owners.
 
-<section id="quickstart">
-
-## 0. Overview
+## 1. Overview
 
 This project builds **completely isolated development environments per project** at Layer 2, accessible securely via VPN.\
 It's a blueprint for **low-cost distributed development**, offshore projects, or private team labs.
@@ -37,7 +35,9 @@ Even if a node failure occurs, communication can continue through gateway failov
 
 ![Zelogx MSL Setup Network Overview](docs/assets/zelogx-MSL-Setup-cluster2.svg)
 
-## 1. Quickstart
+<section id="quickstart">
+
+## 2. Quickstart
 > Please see [**Environmental Integrity & System Impact Report**](https://github.com/zelogx/msl-setup/wiki/Environmental-Integrity-&-System-Impact-Report) if you hesitate to run.<BR>
 > The interactive installer detects overlapping networks and prevents you from selecting addresses that conflict with existing networks inside Proxmox.<BR>
 > Please refer to [**Step-by-Step Install instruction**](https://github.com/zelogx/msl-setup/wiki/I-Tried-Installing-a-Multi%E2%80%90Tenant-Tool-on-My-Home-PVE-%E2%80%93-Install-Edition) also for detail installation steps.
@@ -116,21 +116,21 @@ msldhcp --vmid <VMID> --vnet <VNetName>  # Run non-interactively with explicit a
 
 ---
 
-## 2. Get started
+## 3. Get started
 
 All open-source components --- reproducible setup from scratch.
 
-### 2.1. Requirements
+### 3.1. Requirements
 
 - Proxmox VE 9.0+ host(s)
 - Internet router (for port forwarding VPN traffic)
 
-### 2.2. Upgrade
+### 3.2. Upgrade
 
 Direct upgrade from v1.x is not supported.
 To install v2.x, uninstall v1.x first by running `./99_uninstall.sh`, then proceed with the v2.x installation.
 
-### 2.3. Network Design Considerations
+### 3.3. Network Design Considerations
 
 MSL Setup automatically proposes network addresses, so you do not need to design all of the following values in advance.
 However, because it cannot automatically identify every network address already used in your environment, please make sure that the proposed addresses do not overlap with any existing networks.
@@ -184,7 +184,7 @@ However, all VMs belonging to individual projects (VMnPJxx) are completely isola
 - Some routers limit the number of port-forwarding entries. For example, Buffalo routers allow a maximum of 32. Therefore, when deciding (e), you should also consider your router’s maximum port-forwarding capacity.
 - Also, if you are using IPoE with ND Proxy / MAP-E / DS-Lite, there are restrictions on available ports, so you must check in advance.
 
-## 3. Known Issues
+## 4. Known Issues
 
 - **Network diagram theme behavior**  
     The color scheme of SVG-based network diagrams does **not** follow the Proxmox GUI theme (Light/Dark).  
@@ -194,7 +194,7 @@ However, all VMs belonging to individual projects (VMnPJxx) are completely isola
 - **Error when recreating a Pritunl VM**
    When reinstalling after manually detaching a disk from the VM, an orphan volume may remain (the workaround is now shown in the error message).
 
-## 4. Why This Design Still Matters
+## 5. Why This Design Still Matters
 
 Public clouds deliver global scale and strong SLAs — no argument there.
 But when the goal is controlled, secure, and cost-efficient team development, a well-designed on-prem environment still has a place.
@@ -207,7 +207,7 @@ They can coexist — by design.
 ---
 
 
-## Troubleshooting: UDP port forwarding validation failed
+## 6. Troubleshooting: UDP port forwarding validation failed
 
 During `02_vpnSetup.sh`, you may encounter an error such as:
 
