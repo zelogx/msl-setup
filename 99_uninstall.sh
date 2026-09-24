@@ -194,7 +194,7 @@ fi
 if ! bash 0103_clusterSetup.sh "$MSL_LANG" --restore; then
     log_error "Failed to restore cluster configuration"
     echo "$MSG_UNINSTALL_FAILED"
-    die "Cluster restoration failed. Check logs for details."
+    die "Cluster restoration failed."
 fi
 
 log_info "Cluster configuration restoration completed"

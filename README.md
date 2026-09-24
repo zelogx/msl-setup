@@ -81,8 +81,10 @@ cd msl-setup
 # (Optional) Uninstall MSL setup completely
 ./99_uninstall.sh en   # Language: en|jp (default en)
 # This will:
-#   1. Destroy Pritunl VM (calls 0201_createPritunlVM.sh --destroy)
-#   2. Restore network configuration to backup state (calls 0102_setupNetwork.sh --restore)
+#   1. Delete RBAC settings (Corporate edition only; calls 0301_setupSelfCarePortal.sh --restore)
+#   2. Destroy Pritunl VM (calls 0201_createPritunlVM.sh --destroy)
+#   3. Restore cluster configuration (calls 0103_clusterSetup.sh --restore)
+#   4. Restore network configuration to backup state (calls 0102_setupNetwork.sh --restore)
 
 # (Optional) Cluster operation commands
 # No action is required if the Proxmox cluster was already enabled during the initial setup in v2.0 or later.
@@ -168,7 +170,7 @@ However, all VMs belonging to individual projects (VMnPJxx) are completely isola
 - Network segment for each project. This IP range is divided according to the “number of isolated development segments to be created.”
 - Example: If the network address assigned to vnetpjxx is 172.16.16.0/20 and you are creating 8 segments, it will be divided accordingly as shown below.
 - VM groups inside vnetpjxx (172.16.16.0/24) can communicate freely within that segment.
-- Firewall settings for these VMs are controlled by Security Groups (SG).
+- Firewall rules for these VMs are applied at the Datacenter level (traffic within the same project network is allowed; traffic to other private networks is blocked).
 - Mapped to Pritunl server instances and organizations.
 
 #### g. Pritunl mainlan-side IP: (e.g., 192.168.77.10)
@@ -190,6 +192,10 @@ However, all VMs belonging to individual projects (VMnPJxx) are completely isola
     The color scheme of SVG-based network diagrams does **not** follow the Proxmox GUI theme (Light/Dark).  
     Instead, it respects the OS / browser `prefers-color-scheme` setting.  
     As a result, when your OS or browser is set to light mode, the diagram may appear with light-theme colors even if the Proxmox GUI is using the dark theme (and vice versa).
+
+- **Firewall rules whose comment starts with `MSLSetup` are managed by MSL Setup**  
+    MSL Setup identifies the Datacenter firewall rules it created by their comment, and deletes them on re-run, restore, and uninstall.  
+    Do not edit the comment of these rules, and do not use comments starting with `MSLSetup` for your own rules. A renamed rule will not be removed by MSL Setup, and your own rule with a matching comment may be deleted.
 
 - **Error when recreating a Pritunl VM**
    When reinstalling after manually detaching a disk from the VM, an orphan volume may remain (the workaround is now shown in the error message).

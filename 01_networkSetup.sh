@@ -172,11 +172,9 @@ if [[ "$RESTORE_ONLY" == true ]]; then
         if [[ "$LANG_ARG" == "jp" ]]; then
             echo ""
             echo "エラー: クラスタ設定リストアが失敗しました"
-            echo "詳細はログを確認してください: logs/"
         else
             echo ""
             echo "ERROR: Cluster setup restore failed"
-            echo "Check logs for details: logs/"
         fi
         exit 1
     fi
@@ -240,11 +238,9 @@ if ! "${cluster_restore_cmd[@]}"; then
     if [[ "$LANG_ARG" == "jp" ]]; then
         echo ""
         echo "エラー: クラスタ設定リストアが失敗しました"
-        echo "詳細はログを確認してください: logs/"
     else
         echo ""
         echo "ERROR: Cluster setup restore failed"
-        echo "Check logs for details: logs/"
     fi
     exit 1
 fi
@@ -314,11 +310,9 @@ if [[ "$RESTORE_ONLY" != true ]]; then
         if [[ "$LANG_ARG" == "jp" ]]; then
             echo ""
             echo "エラー: クラスタセットアップが失敗しました"
-            echo "詳細はログを確認してください: logs/"
         else
             echo ""
             echo "ERROR: Cluster setup failed"
-            echo "Check logs for details: logs/"
         fi
         exit 1
     fi

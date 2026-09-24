@@ -67,21 +67,23 @@ Zelogx MSL Setup は、実行時オーバーヘッドを最小限に抑える構
 - **MSL独自の常駐サービスを持たない**: セットアップ完了後も、MSL Setup 自身が独自の制御プレーンや常駐デーモンとして動作し続けることはありません
 - **既存基盤の仕組みを活用**: 実行時の動作は Proxmox、Pritunl、keepalived など既存コンポーネントの仕組みに委ねることで、構成の単純さと保守性を維持します
 
+> 例外: `msldhcp`（DHCP が必要なテナントに限り任意で導入）は、Proxmox SDN の設定変更時にテナントの DHCP 設定を再エクスポートする systemd の path unit をホストに配置します。これはテナントの隔離には関与せず、停止しても DHCP 設定の変更が反映されなくなるだけです。
+
 ### Pritunl自動化（VPNプロビジョニング）
 
-VPN側は公式Pritunl HTTP APIで完全自動化しています。
+VPN側は、Web UIの自動操作を使わずに完全自動化しています。
 
 VPNセットアップ時にMSL Setupが行うこと：
 
 1. cloud-initでPritunl VMを起動
 2. Pritunlサービスが起動するまで待機
-3. VM内で設定されたPritunl API（key/secret）を使って次を実行
+3. 必要な**Server**（OpenVPN / WireGuard、プロジェクトごとに1つ）を、VM内で動作するヘルパーを使ってPritunlのMongoDBに直接登録
+4. Pritunl HTTP API（初期管理者アカウントでログイン）を使って次を実行
    - プロジェクト数分の**Organization**を作成
-   - 必要な**Server**（OpenVPN / WireGuard）を作成
    - **OrganizationをServerに関連付け**
    - 構成したServerを**起動**
 
-Web UIの自動操作は行いません。すべてドキュメント化されたREST APIでプロビジョニングします。
+Web UIの自動操作は行いません。
 
 Proxmoxホスト側から見ると、Pritunl VMはブラックボックスのVPNゲートウェイとして扱われます。
 - ルーティングと隔離はProxmox SDNとnftablesが担当

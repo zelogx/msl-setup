@@ -65,24 +65,27 @@ It’s aimed at engineers who need to give secure, isolated access to specific r
 
 Zelogx MSL Setup is designed as a **pre-configuration tool**.
 
-- **No long-running daemons**: All SDN objects, isolation rules, and VPN gateways are provisioned up front.
+- **No MSL-specific long-running daemons**: All SDN objects, isolation rules, VPN gateways, and the related settings required in a cluster environment are provisioned up front.
 - **Stable after setup**: Once the setup is complete, the configuration is applied directly to Proxmox. There is no separate Zelogx service whose failure would change the security characteristics of the isolated network.
+- **Rely on existing components**: Runtime behavior is delegated to existing components such as Proxmox, Pritunl, and keepalived, keeping the configuration simple and maintainable.
+
+> Exception: `msldhcp` (optional, installed only for tenants that need DHCP) places a systemd path unit on the host that re-exports the tenant's DHCP settings when the Proxmox SDN configuration changes. It takes no part in tenant isolation; if it stops, only updates to the DHCP settings stop being propagated.
 
 ### Pritunl Automation (VPN Provisioning)
 
-The VPN side is fully automated using the official Pritunl HTTP API.
+The VPN side is fully automated, without any web UI automation.
 
 During the VPN setup phase, MSL Setup:
 
 1. Boots the Pritunl VM via cloud-init.
 2. Waits for the Pritunl service to become ready.
-3. Uses the Pritunl API (key/secret configured inside the VM) to:
+3. Registers the required **Servers** (OpenVPN / WireGuard, one per project) directly in Pritunl's MongoDB, using a helper that runs inside the VM.
+4. Uses the Pritunl HTTP API (logged in with the initial administrator account) to:
    - Create **Organizations** for projects.
-   - Create the required **Servers** (OpenVPN / WireGuard)
    - **Attach Organizations to Servers**
    - **Start** the configured Servers
 
-No web UI automation is involved — everything is provisioned through the documented REST API.
+No web UI automation is involved.
 
 From the Proxmox host’s perspective, the Pritunl VM is treated as a black box VPN gateway:
 - Proxmox SDN and nftables handle routing and isolation.

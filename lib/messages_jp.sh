@@ -381,6 +381,7 @@ MSG_SELFCARE_RESTORE_START="RBAC設定をバックアップ状態に復元中...
 MSG_SELFCARE_RESTORE_COMPLETE="復元が正常に完了しました。"
 MSG_SELFCARE_RESTORE_ONLY="リストアのみモード: 復元後に終了します。"
 MSG_SELFCARE_RESTORE_NO_BACKUP="エラー: バックアップが見つかりません。復元できません。"
+MSG_SELFCARE_RESTORE_NOTHING="RBAC のバックアップがありません（セルフケアポータル未設定）。復元する対象はありません。"
 
 # ACL競合チェック
 MSG_SELFCARE_ACL_CHECK="ACL競合を確認中..."

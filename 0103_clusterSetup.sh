@@ -116,8 +116,10 @@ msg() {
         en:CLUSTER_ENV_ALREADY_HAS) printf '%s' 'cluster.env already has record: %s' ;;
         jp:APPENDED_CLUSTER_ENV) printf '%s' 'cluster.env に追記しました: %s' ;;
         en:APPENDED_CLUSTER_ENV) printf '%s' 'Appended to cluster.env: %s' ;;
-        jp:NOT_CLUSTER_EXIT) printf '%s' 'このノードはクラスタに参加していないため、0103_clusterSetup.sh を正常終了します。' ;;
-        en:NOT_CLUSTER_EXIT) printf '%s' 'This node is not part of a cluster. Exiting 0103_clusterSetup.sh successfully.' ;;
+        jp:NOT_CLUSTER_EXIT) printf '%s' 'このノードはクラスタに参加していません。' ;;
+        en:NOT_CLUSTER_EXIT) printf '%s' 'This node is not part of a cluster.' ;;
+        jp:CLUSTER_NOT_ENABLED_SKIP) printf '%s' 'MSL Setup のクラスタ構成は有効化されていないため、del-node / disable-cluster をスキップします。' ;;
+        en:CLUSTER_NOT_ENABLED_SKIP) printf '%s' 'MSL Setup cluster mode is not enabled. Skipping del-node / disable-cluster.' ;;
         jp:PVECM_STATUS_FAILED) printf '%s' 'pvecm status の実行に失敗しました' ;;
         en:PVECM_STATUS_FAILED) printf '%s' 'pvecm status failed' ;;
         jp:RESTORE_MODE_DETECTED) printf '%s' 'restore モードです。%s から BACKUP エントリを読み込みます...' ;;
@@ -323,7 +325,8 @@ append_cluster_env_record() {
 ################################################################################
 # Function: get_cluster_status
 # Description: Run pvecm status and return output through stdout.
-#              If host is not part of a cluster, prints message and exits 0.
+#              If host is not part of a cluster, prints a notice to stderr and
+#              returns 0 with empty stdout (callers treat it as "no members").
 #
 # Main commands/functions used:
 #   - pvecm status: Cluster membership inspection
@@ -334,13 +337,15 @@ get_cluster_status() {
 
     if ! status_output="$(pvecm status 2>&1)"; then
         if printf '%s\n' "$status_output" | grep -Fq "$NOT_CLUSTER_MSG"; then
-            log_info "$(msg NOT_CLUSTER_EXIT)"
-            exit 0
+            # Called via command substitution: print nothing on stdout so callers
+            # see "no member lines", and keep the notice visible on stderr.
+            log_info "$(msg NOT_CLUSTER_EXIT)" >&2
+            return 0
         fi
 
         log_error "$(msg PVECM_STATUS_FAILED)"
         printf '%s\n' "$status_output" >&2
-        exit 1
+        return 1
     fi
 
     printf '%s\n' "$status_output"
@@ -469,6 +474,15 @@ run_restore_flow() {
 
     if [[ ! -f "${SHARED_ENV_PATH}" ]]; then
         log_info "$(printf "$(msg RESTORE_SKIPPED_SHARED_ENV_MISSING)" "${SHARED_ENV_PATH}")"
+        return 0
+    fi
+
+    # cluster.env exists only after mslcm enable-cluster succeeded (and is removed
+    # last by disable-cluster). Without it, there is nothing to tear down in
+    # keepalived/VXLAN peers; just remove the installed artifacts.
+    if [[ ! -f "${CLUSTER_ENV_PATH}" ]]; then
+        log_info "$(msg CLUSTER_NOT_ENABLED_SKIP)"
+        cleanup_restore_artifacts
         return 0
     fi
 

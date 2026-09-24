@@ -26,6 +26,16 @@
 #     MSG_* localization strings, log_info/log_warn/log_error functions.
 ################################################################################
 
+# Comments of datacenter firewall rules created by 0102_setupNetwork.sh.
+# Matched by pattern (not built from .env) so that rules created with previous
+# NUM_PJ / DNS_IP values are still removed after .env is regenerated.
+# Rules owned by mslcm (VXLAN/VRRP) and 0301 (Selfcare) are intentionally excluded.
+# Operational rule: comments starting with "MSLSetup" are managed by MSL Setup;
+# users must not edit them or reuse them for their own rules.
+MSL_0102_RULE_COMMENT_REGEX='^MSLSetup (Allow (Spice|ssh|https) from external network to DC|Drop devpjs to all private networks|ICMP Prtn (VPNDMZ GW|DEVPJS|MAINLAN ANY)|Allow DNS (UDP|TCP) to .+|Allow intra-vnet PJ[0-9]{2}|Disallow internet access for PJ[0-9]{2})$'
+MSL_DC_ACCESS_RULE_COMMENT_REGEX='^MSLSetup Allow (Spice|ssh|https) from external network to DC$'
+MSL_INET_DROP_RULE_COMMENT_REGEX='^MSLSetup Disallow internet access for PJ[0-9]{2}$'
+
 ################################################################################
 # Function: _dump_sdn_state
 # Description: Generic helper to dump SDN/firewall/route state (live or backup)
@@ -157,9 +167,10 @@ _list_contains() {
 _pvesh_delete_logged() {
     local desc="$1"
     local path="$2"
-    local output
-    output=$(pvesh delete "$path" 2>&1)
-    local rc=$?
+    local output rc=0
+    # Capture rc explicitly: a bare failing assignment would trigger set -e
+    # before the error could be logged.
+    output=$(pvesh delete "$path" 2>&1) || rc=$?
     if [[ $rc -ne 0 ]]; then
         log_error "Failed to delete ${desc} (path=${path}, rc=${rc}): ${output}"
         echo "[ERROR] Failed to delete ${desc} (path=${path}, rc=${rc}): ${output}" >&2
@@ -174,14 +185,39 @@ _pvesh_delete_logged() {
 _route_del_logged() {
     local desc="$1"
     local target="$2"
-    local output
-    output=$(ip route del "$target" 2>&1)
-    local rc=$?
+    local output rc=0
+    # Capture rc explicitly: a bare failing assignment would trigger set -e
+    # before the error could be logged.
+    output=$(ip route del "$target" 2>&1) || rc=$?
     if [[ $rc -ne 0 ]]; then
         log_error "Failed to delete ${desc} (${target}, rc=${rc}): ${output}"
         echo "[ERROR] Failed to delete ${desc} (${target}, rc=${rc}): ${output}" >&2
     fi
     return $rc
+}
+
+################################################################################
+# Function: msl_delete_dc_rules_matching
+# Description: Delete all datacenter firewall rules whose comment matches the
+#              given ERE, in descending position order (so earlier positions
+#              stay valid). Returns non-zero on the first delete failure.
+# Main commands/functions used:
+#   - pvesh get: Retrieve datacenter firewall rules
+#   - jq: Extract pos/comment pairs
+#   - _pvesh_delete_logged: Delete rule with error logging
+################################################################################
+msl_delete_dc_rules_matching() {
+    local regex="$1"
+    local rules_json rule_obj pos comment
+    rules_json=$(pvesh get "/cluster/firewall/rules" --output-format json 2>/dev/null || echo '[]')
+    while IFS= read -r rule_obj; do
+        pos=$(jq -r '.pos' <<< "$rule_obj")
+        comment=$(jq -r '.comment' <<< "$rule_obj")
+        [[ "$comment" =~ $regex ]] || continue
+        log_info "Deleting managed datacenter firewall rule at position $pos (comment: $comment)"
+        _pvesh_delete_logged "managed datacenter firewall rule at position $pos" "/cluster/firewall/rules/$pos" || return 1
+        echo -n "."
+    done < <(jq -c '[.[] | {pos, comment:(.comment // "")}] | sort_by(.pos) | reverse | .[]' <<< "$rules_json")
 }
 
 ################################################################################
@@ -376,7 +412,9 @@ msl_restore_to_backup() {
             fi
         done <<< "$backup_zones"
     fi
-    log_info "Applying SDN delete configuration..."; pvesh set /cluster/sdn >/dev/null 2>&1
+    log_info "Applying SDN delete configuration..."
+    pvesh_logged "apply SDN delete configuration" set /cluster/sdn \
+        || die "SDN apply (restore) failed. See log: ${LOG_FILE}"
     log_info "$MSG_SDN_FW_RESTORE"
 
     # Restore datacenter firewall options (enable state)
@@ -404,48 +442,11 @@ msl_restore_to_backup() {
     fi
     echo " [OK]"
 
-    # Delete managed datacenter firewall rules created by 0102 (exact comment match)
-    log_info "Deleting managed datacenter firewall rules by exact comment match"
+    # Delete managed datacenter firewall rules created by 0102 (comment pattern match,
+    # independent of current .env values)
+    log_info "Deleting managed datacenter firewall rules by comment pattern"
     echo -n "Deleting managed DC FW rules....."
-    local managed_rule_comments=""
-    local i idx
-    managed_rule_comments+="MSLSetup Allow Spice from external network to DC"$'\n'
-    managed_rule_comments+="MSLSetup Allow ssh from external network to DC"$'\n'
-    managed_rule_comments+="MSLSetup Allow https from external network to DC"$'\n'
-    managed_rule_comments+="MSLSetup Drop devpjs to all private networks"$'\n'
-    managed_rule_comments+="MSLSetup ICMP Prtn VPNDMZ GW"$'\n'
-    managed_rule_comments+="MSLSetup ICMP Prtn DEVPJS"$'\n'
-    managed_rule_comments+="MSLSetup ICMP Prtn MAINLAN ANY"$'\n'
-
-    if [[ -n "${DNS_IP1:-}" ]]; then
-        managed_rule_comments+="MSLSetup Allow DNS UDP to ${DNS_IP1}"$'\n'
-        managed_rule_comments+="MSLSetup Allow DNS TCP to ${DNS_IP1}"$'\n'
-    fi
-
-    if [[ -n "${DNS_IP2:-}" ]]; then
-        managed_rule_comments+="MSLSetup Allow DNS UDP to ${DNS_IP2}"$'\n'
-        managed_rule_comments+="MSLSetup Allow DNS TCP to ${DNS_IP2}"$'\n'
-    fi
-
-    if [[ -n "${NUM_PJ:-}" ]]; then
-        for i in $(seq 1 "$NUM_PJ"); do
-            idx=$(printf '%02d' "$i")
-            managed_rule_comments+="MSLSetup Allow intra-vnet PJ${idx}"$'\n'
-        done
-    fi
-
-    local current_rules_json
-    current_rules_json=$(pvesh get "/cluster/firewall/rules" --output-format json 2>/dev/null || echo '[]')
-    echo "$current_rules_json" | jq -c '[.[] | {pos, comment:(.comment // "")}] | sort_by(.pos) | reverse | .[]' | while IFS= read -r rule_obj; do
-        local pos current_comment
-        pos=$(echo "$rule_obj" | jq -r '.pos')
-        current_comment=$(echo "$rule_obj" | jq -r '.comment')
-        if echo "$managed_rule_comments" | grep -Fxq "$current_comment"; then
-            log_info "Deleting managed datacenter firewall rule at position $pos (comment: $current_comment)"
-            _pvesh_delete_logged "managed datacenter firewall rule at position $pos" "/cluster/firewall/rules/$pos"
-            echo -n "."
-        fi
-    done
+    msl_delete_dc_rules_matching "$MSL_0102_RULE_COMMENT_REGEX"
     echo " [OK]"
 
     local backup_ipsets

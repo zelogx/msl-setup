@@ -2952,6 +2952,22 @@ class TUIApp:
                 break
 
 
+def _read_msl_vip() -> str:
+    """Return MSL cluster VIP (IP only) from /etc/pve/mslsetup/cluster.env, or empty.
+
+    cluster.env is written by `mslcm enable-cluster` and removed last by
+    `mslcm disable-cluster`, so its presence reflects MSL cluster mode.
+    """
+    try:
+        with open("/etc/pve/mslsetup/cluster.env", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("MAIN_VIP="):
+                    return line.split("=", 1)[1].strip().split("/")[0]
+    except OSError:
+        pass
+    return ""
+
+
 def _check_vmbr0_single_ipv4() -> None:
     """Check that vmbr0 has exactly one IPv4 address.
     
@@ -2970,6 +2986,18 @@ def _check_vmbr0_single_ipv4() -> None:
         print("No IPv4 address detected on vmbr0.")
         print("MSL Setup cannot safely determine the management IP.")
         print("Please configure vmbr0 with one IPv4 address and run 00_configNetwork.sh again.")
+        print()
+        sys.exit(1)
+
+    # The keepalived VIP added by mslcm enable-cluster is an expected extra
+    # address; guide the user to restore first instead of reporting it as a stray IP.
+    msl_vip = _read_msl_vip()
+    if msl_vip and any(ip.split("/")[0] == msl_vip for ip in ips):
+        print()
+        print(f"MSL Setup cluster VIP ({msl_vip}) is active on vmbr0.")
+        print("To regenerate the configuration, first restore the current setup:")
+        print("  ./01_networkSetup.sh --restore")
+        print("Then run 00_configNetwork.sh again.")
         print()
         sys.exit(1)
 

@@ -120,64 +120,29 @@ update_env_var() {
 }
 
 ################################################################################
-# Function: get_rule_pos_by_comment
-# Description: Fetch datacenter firewall rule position by exact comment match
-#
-# Main commands/functions used:
-#   - pvesh get: Retrieve firewall rules JSON
-#   - jq: Filter by comment and extract pos
-################################################################################
-get_rule_pos_by_comment() {
-    local node_name="$1"
-    local comment="$2"
-    pvesh get "/cluster/firewall/rules" --output-format json 2>/dev/null \
-        | jq -r --arg c "$comment" '.[] | select(.comment==$c) | .pos' | head -n1
-}
-
-################################################################################
 # Function: remove_msl_dc_access_rules
-# Description: Remove MSL datacenter access rules by comment in reverse order
+# Description: Remove all MSL datacenter access rules (Spice/ssh/https) by
+#              comment pattern
 #
 # Main commands/functions used:
-#   - get_rule_pos_by_comment: Resolve firewall rule position by comment
-#   - pvesh delete: Delete datacenter firewall rule
+#   - msl_delete_dc_rules_matching: Delete rules whose comment matches ERE
 ################################################################################
 remove_msl_dc_access_rules() {
-    local node_name="$1"
-    local comments=(
-        "MSLSetup Allow Spice from external network to DC"
-        "MSLSetup Allow ssh from external network to DC"
-        "MSLSetup Allow https from external network to DC"
-    )
-    local comment pos
-    for comment in "${comments[@]}"; do
-        pos=$(get_rule_pos_by_comment "$node_name" "$comment")
-        if [[ -n "$pos" && "$pos" != "null" ]]; then
-            log_info "Deleting datacenter firewall rule at position $pos (comment: $comment)"
-            pvesh delete "/cluster/firewall/rules/$pos" >/dev/null 2>&1 || log_warn "Failed to delete datacenter firewall rule: $comment"
-        fi
-    done
+    msl_delete_dc_rules_matching "$MSL_DC_ACCESS_RULE_COMMENT_REGEX" \
+        || log_warn "Failed to delete some datacenter access rules"
 }
 
 ################################################################################
 # Function: remove_msl_project_inet_drop_rules
-# Description: Remove per-project internet egress DROP rules by comment
+# Description: Remove all per-project internet egress DROP rules by comment
+#              pattern (independent of current NUM_PJ)
 #
 # Main commands/functions used:
-#   - get_rule_pos_by_comment: Resolve firewall rule position by comment
-#   - pvesh delete: Delete datacenter firewall rule
+#   - msl_delete_dc_rules_matching: Delete rules whose comment matches ERE
 ################################################################################
 remove_msl_project_inet_drop_rules() {
-    local i idx comment pos
-    for i in $(seq 1 "$NUM_PJ"); do
-        idx=$(printf '%02d' "$i")
-        comment="MSLSetup Disallow internet access for PJ${idx}"
-        pos=$(get_rule_pos_by_comment "$(hostname)" "$comment")
-        if [[ -n "$pos" && "$pos" != "null" ]]; then
-            log_info "Deleting datacenter firewall rule at position $pos (comment: $comment)"
-            pvesh delete "/cluster/firewall/rules/$pos" >/dev/null 2>&1 || log_warn "Failed to delete datacenter firewall rule: $comment"
-        fi
-    done
+    msl_delete_dc_rules_matching "$MSL_INET_DROP_RULE_COMMENT_REGEX" \
+        || log_warn "Failed to delete some internet DROP rules"
 }
 
 ################################################################################
@@ -208,7 +173,7 @@ if [[ "$RESTORE_ONLY" == true ]]; then
         log_info "Restore flag detected; performing restore and exiting"
         clear_project_vnet_dhcp_ranges
         msl_restore_to_backup
-        remove_msl_dc_access_rules "$(hostname)"
+        remove_msl_dc_access_rules
         remove_msl_project_inet_drop_rules
         remove_vpn_pool_route_hooks
         remove_project_gateway_hooks
@@ -216,7 +181,7 @@ if [[ "$RESTORE_ONLY" == true ]]; then
     else
         log_warn "Restore flag detected, but no backup existed at start; skipping restore"
         clear_project_vnet_dhcp_ranges
-        remove_msl_dc_access_rules "$(hostname)"
+        remove_msl_dc_access_rules
         remove_msl_project_inet_drop_rules
         remove_vpn_pool_route_hooks
         remove_project_gateway_hooks
@@ -230,7 +195,7 @@ if [[ "$had_backup" == true ]]; then
     log_info "Backup existed at start. Restoring to initial state before provisioning..."
     clear_project_vnet_dhcp_ranges
     msl_restore_to_backup
-    remove_msl_dc_access_rules "$(hostname)"
+    remove_msl_dc_access_rules
 else
     log_info "First run (no prior backup). Skipping restore before provisioning."
 fi
@@ -281,7 +246,8 @@ echo " [OK]"
 ################################################################################
 echo -n "$MSG_SDN_APPLY_START"
 log_info "$MSG_SDN_APPLY_START"
-pvesh set /cluster/sdn >/dev/null 2>&1
+pvesh_logged "apply SDN configuration" set /cluster/sdn \
+    || die "SDN apply failed. See log: ${LOG_FILE}"
 log_info "SDN configuration applied successfully"
 echo " [OK]"
 
@@ -339,23 +305,25 @@ fi
 
 log_info "$MSG_SDN_FW_OPTIONS"
 log_info "Datacenter firewall initial enable state: ${dc_fw_enable_initial}"
+# Tenant isolation depends on both datacenter and host firewall being enabled.
+# Stop here on failure: after fixing the cause, re-running restores and retries.
 echo -n "Setting datacenter firewall options..."
-if ! pvesh set /cluster/firewall/options -enable 1; then
+if ! pvesh_logged "enable datacenter firewall" set /cluster/firewall/options -enable 1; then
+    echo " [ERROR]"
     echo "[ERROR] $MSG_SDN_FW_OPTIONS_ERROR"
-else
-    echo " [OK]"
+    die "Failed to enable datacenter firewall; tenant isolation would not be enforced. See log: ${LOG_FILE}"
 fi
+echo " [OK]"
 
 # Enable host firewall and nftables (v2.0 added)
 node_name=$(hostname)
 log_info "Enabling host firewall and nftables on node $node_name..." -c
-if pvesh set "/nodes/${node_name}/firewall/options" -enable 1 -nftables 1; then
-    log_info "  Host firewall and nftables enabled successfully" -c
-    echo "Host firewall/nftables........... [OK]"
-else
-    log_warn "  Failed to enable host firewall/nftables (may already be enabled)" -c
-    echo "Host firewall/nftables........... [WARN]"
+if ! pvesh_logged "enable host firewall/nftables on ${node_name}" set "/nodes/${node_name}/firewall/options" -enable 1 -nftables 1; then
+    echo "Host firewall/nftables........... [ERROR]"
+    die "Failed to enable host firewall/nftables on ${node_name}; tenant isolation would not be enforced. See log: ${LOG_FILE}"
 fi
+log_info "  Host firewall and nftables enabled successfully" -c
+echo "Host firewall/nftables........... [OK]"
 
 ################################################################################
 # Datacenter-level Firewall Rules (v2.0: replaces Security Group pj-dev)
@@ -366,17 +334,20 @@ echo -n "Creating datacenter-level FW rules"
 if [[ "$dc_fw_was_off" == true ]]; then
     log_info "  Datacenter firewall was OFF at start; adding DC access rules"
     log_info "  Access rule: IN ACCEPT +dc/all_private_ip → tcp/3128"
-    pvesh create "/cluster/firewall/rules" \
+    pvesh_logged "create DC rule (Spice access)" create "/cluster/firewall/rules" \
         -pos 0 -action ACCEPT -type in -source "+dc/all_private_ip" -proto tcp -dport 3128 -enable 1 \
-        -comment "MSLSetup Allow Spice from external network to DC" >/dev/null 2>&1
+        -comment "MSLSetup Allow Spice from external network to DC" \
+        || die "Failed to create datacenter firewall rule (Spice access). See log: ${LOG_FILE}"
     log_info "  Access rule: IN ACCEPT +dc/all_private_ip → tcp/22"
-    pvesh create "/cluster/firewall/rules" \
+    pvesh_logged "create DC rule (ssh access)" create "/cluster/firewall/rules" \
         -pos 0 -action ACCEPT -type in -source "+dc/all_private_ip" -proto tcp -dport 22 -enable 1 \
-        -comment "MSLSetup Allow ssh from external network to DC" >/dev/null 2>&1
+        -comment "MSLSetup Allow ssh from external network to DC" \
+        || die "Failed to create datacenter firewall rule (ssh access). See log: ${LOG_FILE}"
     log_info "  Access rule: IN ACCEPT +dc/all_private_ip → tcp/8006"
-    pvesh create "/cluster/firewall/rules" \
+    pvesh_logged "create DC rule (https access)" create "/cluster/firewall/rules" \
         -pos 0 -action ACCEPT -type in -source "+dc/all_private_ip" -proto tcp -dport 8006 -enable 1 \
-        -comment "MSLSetup Allow https from external network to DC" >/dev/null 2>&1
+        -comment "MSLSetup Allow https from external network to DC" \
+        || die "Failed to create datacenter firewall rule (https access). See log: ${LOG_FILE}"
     echo -n "."
 else
     log_info "  Datacenter firewall was already ON at start; skipping DC access rules"
@@ -387,27 +358,30 @@ fi
 for i in $(seq "$NUM_PJ" -1 1); do
     idx=$(printf '%02d' "$i")
     log_info "  DROP rule: FORWARD DROP +sdn/vnetpj${idx}-all → any"
-    pvesh create "/cluster/firewall/rules" \
+    pvesh_logged "create DC rule (internet DROP PJ${idx})" create "/cluster/firewall/rules" \
         -action DROP -type forward -source "+sdn/vnetpj${idx}-all" -enable 0 \
-        -comment "MSLSetup Disallow internet access for PJ${idx}" >/dev/null 2>&1 || log_warn "Failed to add internet DROP rule for PJ${idx}"
+        -comment "MSLSetup Disallow internet access for PJ${idx}" || log_warn "Failed to add internet DROP rule for PJ${idx}"
     echo -n "."
 done
 
 log_info "  DROP rule: FORWARD DROP +dc/devpjs → +dc/all_private_ip"
-pvesh create "/cluster/firewall/rules" \
+pvesh_logged "create DC rule (devpjs private DROP)" create "/cluster/firewall/rules" \
     -action DROP -type forward -source "+dc/devpjs" -dest "+dc/all_private_ip" -enable 1 \
-    -comment "MSLSetup Drop devpjs to all private networks" >/dev/null 2>&1
+    -comment "MSLSetup Drop devpjs to all private networks" \
+    || die "Failed to create datacenter firewall rule (devpjs private DROP). See log: ${LOG_FILE}"
 echo -n "."
 # DNS_IP1 (only if private)
 if is_private_ip "${DNS_IP1:-}"; then
     log_info "  DNS rule: FORWARD ACCEPT +dc/devpjs → $DNS_IP1:53/udp"
-    pvesh create "/cluster/firewall/rules" \
+    pvesh_logged "create DC rule (DNS UDP to ${DNS_IP1})" create "/cluster/firewall/rules" \
         -action ACCEPT -type forward -source "+dc/devpjs" -dest "$DNS_IP1" -dport 53 -proto udp -enable 1 \
-        -comment "MSLSetup Allow DNS UDP to $DNS_IP1" >/dev/null 2>&1
+        -comment "MSLSetup Allow DNS UDP to $DNS_IP1" \
+        || die "Failed to create datacenter firewall rule (DNS UDP to ${DNS_IP1}). See log: ${LOG_FILE}"
     log_info "  DNS rule: FORWARD ACCEPT +dc/devpjs → $DNS_IP1:53/tcp"
-    pvesh create "/cluster/firewall/rules" \
+    pvesh_logged "create DC rule (DNS TCP to ${DNS_IP1})" create "/cluster/firewall/rules" \
         -action ACCEPT -type forward -source "+dc/devpjs" -dest "$DNS_IP1" -dport 53 -proto tcp -enable 1 \
-        -comment "MSLSetup Allow DNS TCP to $DNS_IP1" >/dev/null 2>&1
+        -comment "MSLSetup Allow DNS TCP to $DNS_IP1" \
+        || die "Failed to create datacenter firewall rule (DNS TCP to ${DNS_IP1}). See log: ${LOG_FILE}"
 else
     log_info "  Skipping DNS_IP1 ($DNS_IP1) - not private"
 fi
@@ -416,13 +390,13 @@ echo -n "."
 if [[ -n "${DNS_IP2:-}" ]]; then
     if is_private_ip "$DNS_IP2"; then
         log_info "  DNS rule: FORWARD ACCEPT +dc/devpjs → $DNS_IP2:53/udp"
-        pvesh create "/cluster/firewall/rules" \
+        pvesh_logged "create DC rule (DNS UDP to ${DNS_IP2})" create "/cluster/firewall/rules" \
             -action ACCEPT -type forward -source "+dc/devpjs" -dest "$DNS_IP2" -dport 53 -proto udp -enable 1 \
-            -comment "MSLSetup Allow DNS UDP to $DNS_IP2" >/dev/null 2>&1 || log_warn "Failed to add DNS_IP2 UDP rule"
+            -comment "MSLSetup Allow DNS UDP to $DNS_IP2" || log_warn "Failed to add DNS_IP2 UDP rule"
         log_info "  DNS rule: FORWARD ACCEPT +dc/devpjs → $DNS_IP2:53/tcp"
-        pvesh create "/cluster/firewall/rules" \
+        pvesh_logged "create DC rule (DNS TCP to ${DNS_IP2})" create "/cluster/firewall/rules" \
             -action ACCEPT -type forward -source "+dc/devpjs" -dest "$DNS_IP2" -dport 53 -proto tcp -enable 1 \
-            -comment "MSLSetup Allow DNS TCP to $DNS_IP2" >/dev/null 2>&1 || log_warn "Failed to add DNS_IP2 TCP rule"
+            -comment "MSLSetup Allow DNS TCP to $DNS_IP2" || log_warn "Failed to add DNS_IP2 TCP rule"
     else
         log_info "  Skipping DNS_IP2 ($DNS_IP2) - not private"
     fi
@@ -432,9 +406,9 @@ echo -n "."
 for i in $(seq "$NUM_PJ" -1 1); do
     idx=$(printf '%02d' "$i")
     log_info "  Intra-VNet rule: FORWARD ACCEPT +sdn/vnetpj${idx}-all → +sdn/vnetpj${idx}-all"
-    pvesh create "/cluster/firewall/rules" \
+    pvesh_logged "create DC rule (intra-vnet PJ${idx})" create "/cluster/firewall/rules" \
         -action ACCEPT -type forward -source "+sdn/vnetpj${idx}-all" -dest "+sdn/vnetpj${idx}-all" -enable 1 \
-        -comment "MSLSetup Allow intra-vnet PJ${idx}" >/dev/null 2>&1 || log_warn "Failed to add vnetpj${idx} east-west rule"
+        -comment "MSLSetup Allow intra-vnet PJ${idx}" || log_warn "Failed to add vnetpj${idx} east-west rule"
     echo -n "."
 done
 
@@ -444,19 +418,19 @@ icmp_rule2_comment="MSLSetup ICMP Prtn DEVPJS"
 icmp_rule3_comment="MSLSetup ICMP Prtn MAINLAN ANY"
 
 log_info "  ICMP rule1: in ACCEPT +sdn/vpndmzvn-no-gateway → +sdn/vpndmzvn-gateway"
-pvesh create "/cluster/firewall/rules" \
+pvesh_logged "create DC rule (ICMP rule1)" create "/cluster/firewall/rules" \
     -action ACCEPT -type in -source "+sdn/vpndmzvn-no-gateway" -dest "+sdn/vpndmzvn-gateway" -proto icmp -enable 0 \
-    -comment "$icmp_rule1_comment" >/dev/null 2>&1 || log_warn "Failed to add icmp rule1"
+    -comment "$icmp_rule1_comment" || log_warn "Failed to add icmp rule1"
 echo -n "."
 log_info "  ICMP rule2: in ACCEPT +sdn/vpndmzvn-no-gateway → +dc/devpjs"
-pvesh create "/cluster/firewall/rules" \
+pvesh_logged "create DC rule (ICMP rule2)" create "/cluster/firewall/rules" \
     -action ACCEPT -type in -source "+sdn/vpndmzvn-no-gateway" -dest "+dc/devpjs" -proto icmp -enable 0 \
-    -comment "$icmp_rule2_comment" >/dev/null 2>&1 || log_warn "Failed to add icmp rule2"
+    -comment "$icmp_rule2_comment" || log_warn "Failed to add icmp rule2"
 echo -n "."
 log_info "  ICMP rule3: in ACCEPT +dc/mainlan → any"
-pvesh create "/cluster/firewall/rules" \
+pvesh_logged "create DC rule (ICMP rule3)" create "/cluster/firewall/rules" \
     -action ACCEPT -type in -source "+dc/mainlan" -proto icmp -enable 0 \
-    -comment "$icmp_rule3_comment" >/dev/null 2>&1 || log_warn "Failed to add icmp rule3"
+    -comment "$icmp_rule3_comment" || log_warn "Failed to add icmp rule3"
 echo -n "."
 
 # Keep ICMP rule comments as fixed identifiers in scripts (not persisted to .env)

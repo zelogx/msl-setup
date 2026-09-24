@@ -387,6 +387,7 @@ MSG_SELFCARE_RESTORE_START="Restoring RBAC configuration to backup state..."
 MSG_SELFCARE_RESTORE_COMPLETE="Restore completed successfully."
 MSG_SELFCARE_RESTORE_ONLY="Restore-only mode: Exiting after restore."
 MSG_SELFCARE_RESTORE_NO_BACKUP="ERROR: No backup found. Cannot restore."
+MSG_SELFCARE_RESTORE_NOTHING="No RBAC backup found (Self-Care Portal has not been set up). Nothing to restore."
 
 # ACL Conflict Check
 MSG_SELFCARE_ACL_CHECK="Checking for ACL conflicts..."

@@ -569,33 +569,6 @@ remove_backup_entry_from_cluster_env() {
 }
 
 ################################################################################
-# Function: remove_master_entry_from_cluster_env
-# Description: Remove MASTER entry from cluster.env.
-#
-# Main commands/functions used:
-#   - awk: Filter out matching MASTER line
-#   - mv: Atomically replace cluster.env
-################################################################################
-remove_master_entry_from_cluster_env() {
-    local tmp_file
-
-    if [[ ! -f "$CLUSTER_ENV" ]]; then
-        log_info "cluster.env not found; skipping MASTER entry cleanup"
-        return 0
-    fi
-
-    if ! grep -Fxq "^MASTER=" "$CLUSTER_ENV"; then
-        log_info "cluster.env does not contain MASTER entry; skipping"
-        return 0
-    fi
-
-    tmp_file="$(mktemp "${STATE_DIR}/.cluster.env.tmp.XXXXXX")"
-    awk '$0 !~ /^MASTER=/ { print }' "$CLUSTER_ENV" > "$tmp_file"
-    mv "$tmp_file" "$CLUSTER_ENV"
-    log_info "Removed MASTER entry from cluster.env"
-}
-
-################################################################################
 # Function: remove_vxlan_peers_fw_rule
 # Description: Remove datacenter IN rule for VXLAN UDP/4789 between vxlan peers.
 #
@@ -736,38 +709,73 @@ restore_local_gateway_backend() {
     log_info "Restored local mslsetup-vxlan-gw hooks by removing cluster no-op patch"
 }
 
+# Packages installed by MSL Setup are recorded per node in
+# /var/lib/mslsetup/msl-installed-packages, and only those are purged on
+# teardown. Pre-existing keepalived/arping (and unrelated orphan packages) are
+# never removed. The same scripts run locally and remotely (via ssh "bash -s"),
+# so the marker lives on each node's local disk.
+
+# Install keepalived/arping only when the command is missing (checking commands,
+# not package names, keeps an existing iputils-arping untouched).
+read -r -d '' PKG_INSTALL_SCRIPT <<'EOF' || true
+set -euo pipefail
+marker="/var/lib/mslsetup/msl-installed-packages"
+need=()
+command -v keepalived >/dev/null 2>&1 || need+=(keepalived)
+command -v arping >/dev/null 2>&1 || need+=(arping)
+if [[ ${#need[@]} -eq 0 ]]; then
+    echo "[INFO] keepalived and arping already present on $(hostname -s); nothing to install"
+    exit 0
+fi
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y >/dev/null 2>&1
+apt-get install -y "${need[@]}" >/dev/null 2>&1
+mkdir -p "$(dirname "$marker")"
+for p in "${need[@]}"; do
+    grep -Fxq "$p" "$marker" 2>/dev/null || echo "$p" >> "$marker"
+done
+echo "[INFO] Installed on $(hostname -s): ${need[*]} (recorded in ${marker})"
+EOF
+
+# Purge only packages recorded by PKG_INSTALL_SCRIPT; no autoremove.
+read -r -d '' PKG_REMOVE_SCRIPT <<'EOF' || true
+set -uo pipefail
+marker="/var/lib/mslsetup/msl-installed-packages"
+if [[ ! -s "$marker" ]]; then
+    echo "[INFO] No packages installed by MSL Setup on $(hostname -s); skipping package removal"
+    exit 0
+fi
+mapfile -t pkgs < "$marker"
+export DEBIAN_FRONTEND=noninteractive
+apt-get purge -y "${pkgs[@]}" >/dev/null 2>&1 \
+    || apt-get remove -y "${pkgs[@]}" >/dev/null 2>&1 \
+    || echo "[WARN] Failed to remove ${pkgs[*]} on $(hostname -s)" >&2
+rm -f "$marker"
+rmdir "$(dirname "$marker")" 2>/dev/null || true
+echo "[INFO] Removed packages installed by MSL Setup on $(hostname -s): ${pkgs[*]}"
+EOF
+
 ################################################################################
 # Function: ensure_packages_local
-# Description: Install keepalived and arping if missing on local node.
+# Description: Install keepalived and arping on local node if missing, recording
+#              what MSL Setup installed.
 #
 # Main commands/functions used:
-#   - apt-get: Install packages
-#   - command: Check executable presence
+#   - bash: Run PKG_INSTALL_SCRIPT
 ################################################################################
 ensure_packages_local() {
-    if command -v keepalived >/dev/null 2>&1 && command -v arping >/dev/null 2>&1; then
-        return 0
-    fi
-    log_info "Installing keepalived and arping on local node..."
-    apt-get update -y >/dev/null 2>&1
-    apt-get install -y keepalived arping >/dev/null 2>&1
+    bash -s <<< "$PKG_INSTALL_SCRIPT"
 }
 
 ################################################################################
 # Function: remove_packages_local
-# Description: Remove keepalived stack and unused related dependencies locally.
+# Description: Purge only the packages MSL Setup installed on local node.
 #
 # Main commands/functions used:
-#   - apt-get: Purge packages and autoremove orphaned dependencies
+#   - bash: Run PKG_REMOVE_SCRIPT
 ################################################################################
 remove_packages_local() {
-    log_info "Removing keepalived and arping on local node..."
-    DEBIAN_FRONTEND=noninteractive apt-get purge -y keepalived arping >/dev/null 2>&1 \
-        || DEBIAN_FRONTEND=noninteractive apt-get remove -y keepalived arping >/dev/null 2>&1 \
-        || true
-
-    # Remove dependencies that became unnecessary after keepalived purge.
-    DEBIAN_FRONTEND=noninteractive apt-get autoremove -y --purge >/dev/null 2>&1 || true
+    bash -s <<< "$PKG_REMOVE_SCRIPT"
 }
 
 ################################################################################
@@ -1217,6 +1225,17 @@ cmd_enable_cluster() {
         return 0
     fi
 
+    # Refuse only after add-node has run: BACKUP nodes already use the current
+    # auth_pass/VIP, and re-running would regenerate them on this node only and
+    # drop BACKUP entries (breaking VRRP). Before that, re-running is safe and
+    # allows recovery from a partially failed enable-cluster.
+    if [[ -f "$CLUSTER_ENV" ]] && grep -q '^BACKUP=' "$CLUSTER_ENV"; then
+        log_error "MSL cluster mode is already enabled with member nodes (${CLUSTER_ENV})."
+        log_error "To reconfigure, run './01_networkSetup.sh' (it restores first),"
+        log_error "or run 'mslcm del-node <IP>' for each node and 'mslcm disable-cluster' first."
+        exit 1
+    fi
+
     ensure_shared_env
     ensure_packages_local
 
@@ -1288,6 +1307,11 @@ cmd_add_node() {
         exit 1
     fi
 
+    # Record the node before changing anything on it, so that a partially failed
+    # add-node is still torn down by del-node (0103 --restore reads BACKUP entries)
+    # and enable-cluster refuses to regenerate auth_pass it may already use.
+    append_backup_entry_to_cluster_env "$target_ip"
+
     log_info "Enabling host firewall and nftables on target node ${target_node_name}..."
     if pvesh set "/nodes/${target_node_name}/firewall/options" -enable 1 -nftables 1 >/dev/null 2>&1; then
         log_info "Host firewall and nftables enabled on ${target_node_name}"
@@ -1314,7 +1338,7 @@ cmd_add_node() {
     log_info "Calculated keepalived priority for ${target_ip}: ${priority}"
 
     log_info "Installing keepalived and arping for ${target_ip}..."
-    remote_exec "$target_ip" "apt-get update -y && apt-get install -y keepalived arping >/dev/null 2>&1"
+    remote_exec "$target_ip" bash -s <<< "$PKG_INSTALL_SCRIPT"
     log_info "Copying $HOOK_PATH for ${target_ip}..."
     remote_copy "$HOOK_PATH" "$target_ip" "$HOOK_PATH"
     remote_exec "$target_ip" "chmod 755 $HOOK_PATH"
@@ -1370,8 +1394,6 @@ EOF
 
     update_zone_peers "$target_ip"
 
-    append_backup_entry_to_cluster_env "$target_ip"
-
     log_info "add-node completed for ${target_ip}"
 }
 
@@ -1421,8 +1443,8 @@ cmd_del_node() {
         log_info "Removing keepalived configuration and hooks on ${target_ip}..."
         remote_exec "$target_ip" "rm -f $KEEPALIVED_CONF $HOOK_PATH"
 
-        log_info "Purging keepalived stack (including orphan dependencies) on ${target_ip}..."
-        remote_exec "$target_ip" "DEBIAN_FRONTEND=noninteractive apt-get purge -y keepalived arping >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get remove -y keepalived arping >/dev/null 2>&1 || true; DEBIAN_FRONTEND=noninteractive apt-get autoremove -y --purge >/dev/null 2>&1 || true"
+        log_info "Removing packages installed by MSL Setup on ${target_ip}..."
+        remote_exec "$target_ip" bash -s <<< "$PKG_REMOVE_SCRIPT" || log_warn "Remote package removal failed on ${target_ip}; continuing cleanup"
     else
         log_warn "Target node unreachable (${target_ip}); skipping remote cleanup steps"
     fi
@@ -1460,7 +1482,7 @@ cmd_disable_cluster() {
 
     restore_local_gateway_backend
 
-    rm -f "$HOOK_PATH" "$KEEPALIVED_CONF" "$CLUSTER_ENV"
+    rm -f "$HOOK_PATH" "$KEEPALIVED_CONF"
     remove_packages_local
 
     remove_vxlan_peers_fw_rule
@@ -1468,7 +1490,9 @@ cmd_disable_cluster() {
     remove_vxlan_peer_entry "$PVE_IP"
     cleanup_vxlan_peers_ipset_if_empty
 
-    remove_master_entry_from_cluster_env
+    # Remove cluster.env last: 0103 --restore uses its presence to decide whether
+    # disable-cluster is still required, so it must survive partial failures above.
+    rm -f "$CLUSTER_ENV"
 
     log_info "disable-cluster completed on local node"
 }

@@ -279,6 +279,28 @@ create_ipset_entry() {
 }
 
 ################################################################################
+# Function: pvesh_logged
+# Description: Run pvesh with stdout discarded; on failure, log the command,
+#              exit code and pvesh stderr. Returns pvesh's exit code so the
+#              caller decides whether the failure is fatal.
+# Main commands/functions used:
+#   - pvesh: Proxmox API operation
+################################################################################
+pvesh_logged() {
+    local desc="$1"
+    shift
+    local err_out rc=0
+    err_out=$(pvesh "$@" 2>&1 >/dev/null) || rc=$?
+    if (( rc != 0 )); then
+        log_error "Failed to ${desc} (rc=${rc}): pvesh $*"
+        if [[ -n "$err_out" ]]; then
+            log_error "pvesh error: ${err_out}"
+        fi
+    fi
+    return "$rc"
+}
+
+################################################################################
 # Function: create_sdn_zone
 # Description: SDN Zoneを作成（冪等性あり）
 # Main commands/functions used:
@@ -517,13 +539,10 @@ remove_vpn_pool_route_hooks() {
 # Description: Ensure per-project gateway hooks exist via if-up/if-down scripts
 # Main commands/functions used:
 #   - cat/printf: Generate hook scripts for vnetpjXX interfaces
-#   - awk: Remove legacy post-up/pre-down lines from interfaces.d/sdn
 ################################################################################
 persist_project_gateway_hooks() {
     local if_up_hook="/etc/network/if-up.d/mslsetup-vxlan-gw"
     local if_down_hook="/etc/network/if-down.d/mslsetup-vxlan-gw"
-    local sdn_file="/etc/network/interfaces.d/sdn"
-    local tmp_file="${sdn_file}.tmp"
     local up_tmp
     local down_tmp
     local i idx iface cidr_var gw_var cidr gw prefix
@@ -623,16 +642,6 @@ EOF
     mv "$up_tmp" "$if_up_hook"
     mv "$down_tmp" "$if_down_hook"
     chmod 0755 "$if_up_hook" "$if_down_hook"
-
-    # Remove legacy in-interface hooks from /etc/network/interfaces.d/sdn.
-    if [[ -f "$sdn_file" ]]; then
-        awk '
-            /post-up[[:space:]]+ip[[:space:]]+addr[[:space:]]+(add|replace)/ && /vnetpj[0-9][0-9]/ { next }
-            /pre-down[[:space:]]+ip[[:space:]]+addr[[:space:]]+del/ && /vnetpj[0-9][0-9]/ { next }
-            { print }
-        ' "$sdn_file" > "$tmp_file"
-        mv "$tmp_file" "$sdn_file"
-    fi
 
     if command -v ifreload2 >/dev/null 2>&1; then
         ifreload2 -a
