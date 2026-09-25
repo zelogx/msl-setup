@@ -19,7 +19,7 @@
 #
 # Usage:
 #   source lib/sdn_backup_restore.sh
-#   msl_handle_backup_restore "${RESTORE_ONLY}"  # Performs backup or restore flows
+#   msl_perform_backup / msl_restore_to_backup (called from 0102_setupNetwork.sh)
 #
 # Notes:
 #   - Relies on global variables: backup_dir, backup_complete_flag, VPN_POOL,
@@ -489,37 +489,3 @@ msl_restore_to_backup() {
     log_info "==== END POST-RESTORE STATE ===="
 }
 
-################################################################################
-# Function: msl_handle_backup_restore
-# Description: Decide whether to backup (first run) or restore (subsequent run)
-################################################################################
-msl_handle_backup_restore() {
-    local restore_only_flag="$1"
-    local had_backup_at_start=false
-    if [[ -f "$backup_complete_flag" ]]; then
-        had_backup_at_start=true
-    fi
-
-    # --restore: do not create backup; only restore if a backup already exists
-    if [[ "$restore_only_flag" == true ]]; then
-        if [[ "$had_backup_at_start" == true ]]; then
-            msl_restore_to_backup
-            echo "[SUCCESS] $MSG_SDN_RESTORE_ONLY_DONE"
-        else
-            log_warn "Restore-only requested but no backup existed at start; skipping restore"
-            echo "[WARN] $MSG_SDN_RESTORE_ONLY_NO_BACKUP"
-        fi
-        exit 0
-    fi
-
-    # Normal run: create backup only when none existed, but skip restore on very first run
-    if [[ "$had_backup_at_start" == false ]]; then
-        msl_perform_backup
-    fi
-
-    if [[ "$had_backup_at_start" == true ]]; then
-        msl_restore_to_backup
-    else
-        log_info "First run detected; skipping restore because no backup existed at start"
-    fi
-}

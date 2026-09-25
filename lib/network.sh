@@ -40,37 +40,6 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 fi
 
 ################################################################################
-# Function: ip_to_int
-# Description: Convert IP address to 32-bit integer
-#
-# Main commands/functions used:
-#   - IFS/read: Parse IP octets
-#   - Arithmetic: Convert to integer
-################################################################################
-ip_to_int() {
-    local ip="$1"
-    local a b c d
-    IFS='.' read -r a b c d <<< "$ip"
-    echo "$((a * 256 ** 3 + b * 256 ** 2 + c * 256 + d))"
-}
-
-################################################################################
-# Function: int_to_ip
-# Description: Convert 32-bit integer to IP address
-#
-# Main commands/functions used:
-#   - Arithmetic: Convert integer to octets
-################################################################################
-int_to_ip() {
-    local int="$1"
-    local a=$((int / 256 ** 3))
-    local b=$(((int / 256 ** 2) % 256))
-    local c=$(((int / 256) % 256))
-    local d=$((int % 256))
-    echo "${a}.${b}.${c}.${d}"
-}
-
-################################################################################
 # Function: parse_cidr
 # Description: Parse CIDR notation into network address and prefix length
 #
@@ -150,7 +119,7 @@ broadcast_address() {
 #
 # Main commands/functions used:
 #   - parse_cidr: Extract network and prefix
-#   - ip_to_int: Convert to integers
+#   - ipv4_to_int: Convert to integers
 #   - Arithmetic: Range comparison
 ################################################################################
 cidr_overlaps() {
@@ -167,10 +136,10 @@ cidr_overlaps() {
     local bcast1=$(broadcast_address "$net1_addr" "$prefix1")
     local bcast2=$(broadcast_address "$net2_addr" "$prefix2")
     
-    local net1_int=$(ip_to_int "$net1_addr")
-    local bcast1_int=$(ip_to_int "$bcast1")
-    local net2_int=$(ip_to_int "$net2_addr")
-    local bcast2_int=$(ip_to_int "$bcast2")
+    local net1_int=$(ipv4_to_int "$net1_addr")
+    local bcast1_int=$(ipv4_to_int "$bcast1")
+    local net2_int=$(ipv4_to_int "$net2_addr")
+    local bcast2_int=$(ipv4_to_int "$bcast2")
     
     # Check if ranges overlap
     if [[ $net1_int -le $bcast2_int && $bcast1_int -ge $net2_int ]]; then
@@ -185,7 +154,7 @@ cidr_overlaps() {
 # Description: Check if an IP address is within a CIDR range
 #
 # Main commands/functions used:
-#   - ip_to_int: Convert IP to integer
+#   - ipv4_to_int: Convert IP to integer
 #   - network_address: Calculate network address
 #   - broadcast_address: Calculate broadcast address
 ################################################################################
@@ -201,9 +170,9 @@ cidr_contains() {
     local net_addr=$(network_address "$net" "$prefix")
     local bcast=$(broadcast_address "$net_addr" "$prefix")
     
-    local net_int=$(ip_to_int "$net_addr")
-    local bcast_int=$(ip_to_int "$bcast")
-    local ip_int=$(ip_to_int "$ip")
+    local net_int=$(ipv4_to_int "$net_addr")
+    local bcast_int=$(ipv4_to_int "$bcast")
+    local ip_int=$(ipv4_to_int "$ip")
     
     # Check if IP is within range
     if [[ $ip_int -ge $net_int && $ip_int -le $bcast_int ]]; then
@@ -256,12 +225,12 @@ calculate_subnet() {
         return 1
     fi
     
-    local net_int=$(ip_to_int "$network")
+    local net_int=$(ipv4_to_int "$network")
     local subnet_size=$((1 << (32 - new_prefix)))
     
     for ((i = 0; i < num_subnets; i++)); do
         local subnet_net=$((net_int + i * subnet_size))
-        local subnet_ip=$(int_to_ip $subnet_net)
+        local subnet_ip=$(int_to_ipv4 $subnet_net)
         echo "${subnet_ip}/${new_prefix}"
     done
 }
@@ -504,12 +473,12 @@ find_available_network() {
     esac
     
     # Try to find available network
-    local base_int=$(ip_to_int "$base_network")
+    local base_int=$(ipv4_to_int "$base_network")
     local subnet_size=$((1 << (32 - desired_prefix)))
     
     for ((i = 0; i < 256; i++)); do
         local candidate_int=$((base_int + i * subnet_size))
-        local candidate_ip=$(int_to_ip $candidate_int)
+        local candidate_ip=$(int_to_ipv4 $candidate_int)
         local candidate_cidr="${candidate_ip}/${desired_prefix}"
         
         # Show progress every 10 iterations

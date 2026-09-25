@@ -46,7 +46,7 @@ MSG_UNINSTALL_STEP1="ステップ1: RBAC設定を削除しています..."
 MSG_UNINSTALL_STEP2="ステップ2: Pritunl VMを破棄しています..."
 MSG_UNINSTALL_STEP3="ステップ3: クラスタ設定を復元しています..."
 MSG_UNINSTALL_STEP4="ステップ4: ネットワーク設定を復元しています..."
-MSG_UNINSTALL_STEP5="ステップ5: Quota設定を復元しています..."
+MSG_UNINSTALL_STEP5="ステップ5: ネットワーク図（SVG とノードのメモ）を削除しています..."
 MSG_ASSUMING_NO_RBAC_OR_NO_CORPORATE_EDITION="RBAC設定の削除をスキップします（Corporate Editionではないか、関連スクリプトが見つかりません）。"
 MSG_UNINSTALL_COMPLETE="アンインストールが正常に完了しました。"
 MSG_UNINSTALL_FAILED="アンインストールに失敗しました。ログを確認してください。"
@@ -272,12 +272,12 @@ MSG_FINDING_ALTERNATIVE="競合が検出されました。代替ネットワー�
 MSG_SEARCHING="検索中"
 MSG_ALTERNATIVE_FOUND="代替ネットワークが見つかりました"
 
-# SDN (01_setup_sdn.sh) console messages
+# SDN (0102_setupNetwork.sh) console messages
 MSG_SDN_BACKUP_START="SDN・Firewall設定の初回バックアップを取得します..."
 MSG_SDN_RESTORE_EXISTING="既存のバックアップが見つかりました。SDN・Firewall設定をバックアップ状態にリストアします..."
 MSG_SDN_RESTORE_DONE="バックアップ状態へのリストアが完了しました"
 MSG_SDN_RESTORE_ONLY_DONE="SDN設定をバックアップ状態にリストアしました。"
-MSG_SDN_RESTORE_ONLY_NO_BACKUP="--restore が指定されましたがバックアップが存在しません。リストアをスキップします。"
+MSG_SDN_RESTORE_NO_BACKUP="SDN のバックアップがありません。MSL の FW ルールと GW フックのみ削除しました。"
 
 MSG_SDN_APPLY_START="SDN設定を適用します..."
 MSG_SDN_IPSET_START="IPSet作成を開始します..."
@@ -296,7 +296,9 @@ MSG_SDN_ROUTE_CONFLICT="VPN Poolネットワークが直接接続されていま
 MSG_SDN_ROUTE_SKIP_NO_IFACE="vpndmzvnインターフェースが存在しません。戻り経路設定をスキップします。"
 
 MSG_SDN_DONE="SDN設定が完了しました。"
-MSG_SDN_ENV_MISSING=".envファイルが見つかりません。先に00_check_env.shを実行してください。"
+MSG_SDN_ENV_MISSING=".envファイルが見つかりません。先に ./00_configNetwork.sh を実行してください。"
+MSG_SDN_RESERVED_NAMES_IN_USE="MSL Setup の予約名が既に使われています: %s。名前を変更するか削除してから、./01_networkSetup.sh を再実行してください。"
+MSG_SDN_CLUSTER_MODE_ENABLED="MSL Setup のクラスタモードが有効です。このスクリプトではなく ./01_networkSetup.sh（または ./01_networkSetup.sh --restore）を実行してください。"
 
 # Usage / argument validation (v2.0)
 ## (Usage messages are English-only; no JP equivalents by project specification v2.0)

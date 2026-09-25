@@ -14,7 +14,6 @@
 #   - log_warn(): Warning logging with timestamps
 #   - die(): Error exit with cleanup
 #   - backup_file(): File backup with timestamp
-#   - restore_file(): File restoration from backup
 #   - validate_ip(): IP address validation
 #   - validate_cidr(): CIDR notation validation
 #   - setup_logging(): Initialize logging with optional context name
@@ -166,23 +165,6 @@ backup_file() {
     fi
 }
 
-restore_file() {
-    local file_path="$1"
-    local filename=$(basename "${file_path}")
-    local latest_backup=$(ls -1 "${BACKUP_DIR}/${filename}".*.bak 2>/dev/null | sort -r | head -n 1)
-    if [[ -z "${latest_backup}" ]]; then
-        log_error "No backup found for: ${file_path}"
-        return 1
-    fi
-    if cp -p "${latest_backup}" "${file_path}"; then
-        log_info "Restored: ${latest_backup} -> ${file_path}"
-        return 0
-    else
-        log_error "Failed to restore: ${file_path}"
-        return 1
-    fi
-}
-
 validate_ip() {
     local ip="$1"
     local stat=1
@@ -233,9 +215,9 @@ validate_private_ip() {
 
 
 #===========================================================
-# IPSet を新規作成する
-#  - 既に存在している場合 or pvesh エラー時は exit 1
-#  - 事前の存在チェックはしない（作れない＝異常）
+# Create a new IPSet
+#  - Exits 1 if it already exists or pvesh fails
+#  - No existence check beforehand (failing to create means something is wrong)
 #-----------------------------------------------------------
 create_ipset() {
     local name="$1"
@@ -257,8 +239,8 @@ create_ipset() {
 }
 
 #===========================================================
-# IPSet にエントリ(CIDR)を追加する
-#  - 追加に失敗したら exit 1
+# Add an entry (CIDR) to an IPSet
+#  - Exits 1 if adding fails
 #-----------------------------------------------------------
 create_ipset_entry() {
     local name="$1"
@@ -302,59 +284,53 @@ pvesh_logged() {
 
 ################################################################################
 # Function: create_sdn_zone
-# Description: SDN Zoneを作成（冪等性あり）
+# Description: Create an SDN zone. Exits if it cannot be created (e.g. a zone
+#              with the same name already exists): the name is reserved for
+#              MSL Setup and existing objects are never reused.
 # Main commands/functions used:
-#   - pvesh: Proxmox API操作
+#   - pvesh_logged: Proxmox API operation with error logging
 ################################################################################
 create_sdn_zone() {
     local zone_name="$1"
     local zone_type="$2"
     local params="$3"
-    # 既存Zone一覧取得
-    local exists=$(pvesh get /cluster/sdn/zones --output-format json | jq -r ".[] | select(.zone == \"$zone_name\") | .zone")
-    if [[ "$exists" == "$zone_name" ]]; then
-        log_info "SDN zone $zone_name already exists. Skipping."
-        return 0
-    fi
     log_info "Creating SDN zone $zone_name, Type: $zone_type, Params: $params"
-    pvesh create /cluster/sdn/zones -zone "$zone_name" -type "$zone_type" $params
+    # shellcheck disable=SC2086  # params holds multiple pvesh options
+    pvesh_logged "create SDN zone ${zone_name}" create /cluster/sdn/zones -zone "$zone_name" -type "$zone_type" $params \
+        || die "Failed to create SDN zone ${zone_name} (already exists or pvesh error). See log: ${LOG_FILE}"
     log_info "  Zone $zone_name created successfully"
     echo -n "."
 }
 
 ################################################################################
 # Function: create_sdn_vnet
-# Description: SDN VNetを作成（冪等性あり）
+# Description: Create an SDN VNet. Exits if it cannot be created (e.g. a VNet
+#              with the same name already exists; see create_sdn_zone).
 # Main commands/functions used:
-#   - pvesh: Proxmox API操作
+#   - pvesh_logged: Proxmox API operation with error logging
 ################################################################################
 create_sdn_vnet() {
     local vnet_name="$1"
     local zone="$2"
     local params="$3"
-    local exists=$(pvesh get /cluster/sdn/vnets --output-format json | jq -r ".[] | select(.vnet == \"$vnet_name\") | .vnet")
-    if [[ "$exists" == "$vnet_name" ]]; then
-        log_info "SDN VNet $vnet_name already exists. Skipping."
-        return 0
-    fi
     log_info "Creating SDN VNet $vnet_name, Zone: $zone, Params: $params"
-    pvesh create /cluster/sdn/vnets -vnet "$vnet_name" -zone "$zone" $params
+    # shellcheck disable=SC2086  # params holds multiple pvesh options
+    pvesh_logged "create SDN VNet ${vnet_name}" create /cluster/sdn/vnets -vnet "$vnet_name" -zone "$zone" $params \
+        || die "Failed to create SDN VNet ${vnet_name} (already exists or pvesh error). See log: ${LOG_FILE}"
     log_info "  VNet $vnet_name created successfully"
     echo -n "."
 }
 
 ################################################################################
 # Function: create_sdn_subnet
-# Description: SDN Subnetを作成（冪等性あり）
+# Description: Create an SDN subnet under a VNet (no existence check)
 # Main commands/functions used:
-#   - pvesh: Proxmox API操作
+#   - pvesh: Proxmox API operations
 ################################################################################
 create_sdn_subnet() {
     local subnet_cidr="$1"
     local vnet="$2"
     local params="$3"
-    # SubnetはVNet配下で管理されるため、VNet経由でチェック
-    # subnet IDは zone-network-mask形式なので、CIDRフィールドで比較
     log_info "Creating SDN subnet $subnet_cidr, VNet: $vnet, Params: $params"
     if ! pvesh create /cluster/sdn/vnets/$vnet/subnets -subnet "$subnet_cidr" -type subnet $params; then
         log_info "Create SDN $vnet Subnet $subnet_cidr Param $params failed."
@@ -445,7 +421,8 @@ set_vnet_subnet_dhcp_range() {
         | jq -r --arg cidr "$subnet_cidr" '.[] | select(.cidr == $cidr) | .subnet' \
         | head -n1)
     if [[ -z "$subnet_id" ]]; then
-        subnet_id="${vnet}-${subnet_cidr%/*}-${subnet_cidr#*/}"
+        log_error "Subnet ${subnet_cidr} not found on ${vnet}; cannot set dhcp-range"
+        return 1
     fi
 
     log_info "Setting DHCP range on ${vnet}/${subnet_cidr} (subnet-id: ${subnet_id}): ${dhcp_range} (${dhcp_range_param})"
@@ -481,8 +458,6 @@ clear_vnet_subnet_dhcp_ranges() {
 
         if pvesh set "/cluster/sdn/vnets/${vnet}/subnets/${subnet_id}" -delete dhcp-range >/dev/null 2>&1; then
             log_info "Cleared dhcp-range on ${vnet}/${subnet}"
-        elif pvesh set "/cluster/sdn/vnets/${vnet}/subnets/${subnet_id}" -dhcp-range "" >/dev/null 2>&1; then
-            log_info "Cleared dhcp-range on ${vnet}/${subnet} (fallback)"
         else
             log_warn "Failed to clear dhcp-range on ${vnet}/${subnet}; continuing"
         fi
@@ -507,31 +482,6 @@ clear_project_vnet_dhcp_ranges() {
         [[ "$vnet" =~ ^vnetpj[0-9]{2}$ ]] || continue
         clear_vnet_subnet_dhcp_ranges "$vnet"
     done <<< "$vnets"
-}
-
-################################################################################
-# Function: persist_vpn_pool_route
-# Description: Legacy cleanup helper for deprecated mslsetup-route hooks
-# Main commands/functions used:
-#   - rm: Remove legacy hook scripts if present
-################################################################################
-persist_vpn_pool_route() {
-    remove_vpn_pool_route_hooks
-    log_info "Legacy vpndmzvn route hooks removed; route handling moved to mslsetup-vxlan-gw"
-}
-
-################################################################################
-# Function: remove_vpn_pool_route_hooks
-# Description: Remove vpndmzvn route hook scripts created by persist_vpn_pool_route
-# Main commands/functions used:
-#   - rm: Delete hook scripts if present
-################################################################################
-remove_vpn_pool_route_hooks() {
-    local if_up_hook="/etc/network/if-up.d/mslsetup-route"
-    local if_down_hook="/etc/network/if-down.d/mslsetup-route"
-
-    rm -f "$if_up_hook" "$if_down_hook"
-    log_info "vpndmzvn route hooks removed (if existed)"
 }
 
 ################################################################################
@@ -643,11 +593,7 @@ EOF
     mv "$down_tmp" "$if_down_hook"
     chmod 0755 "$if_up_hook" "$if_down_hook"
 
-    if command -v ifreload2 >/dev/null 2>&1; then
-        ifreload2 -a
-    else
-        ifreload -a
-    fi
+    ifreload -a
 
     if [[ "$valid_count" -gt 0 ]]; then
         log_info "Project gateway hooks configured successfully for $valid_count interfaces"
@@ -668,24 +614,6 @@ remove_project_gateway_hooks() {
 
     rm -f "$if_up_hook" "$if_down_hook"
     log_info "vnetpj gateway hooks removed (if existed)"
-}
-
-# Helper: private IP detection (RFC1918 only)
-################################################################################
-# Function: is_private_ip
-# Description: Return 0 if IP is in RFC1918 ranges (10/8, 172.16-31/12, 192.168/16)
-# Main commands/functions used:
-#   - bash regex matching
-################################################################################
-is_private_ip() {
-    local ip="$1"
-    [[ -z "$ip" ]] && return 1
-    [[ "$ip" =~ ^10\. ]] && return 0
-    [[ "$ip" =~ ^192\.168\. ]] && return 0
-    if [[ "$ip" =~ ^172\.([1-2][0-9]|3[0-1])\. ]]; then
-        return 0
-    fi
-    return 1
 }
 
 ################################################################################

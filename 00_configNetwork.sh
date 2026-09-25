@@ -5,7 +5,7 @@
 # © 2025 Zelogx. Zelogx™ and the Zelogx logo are trademarks
 # of the Zelogx Project. All other marks are property of their respective owners.
 #
-# Filename: 0101_configNetwork.sh
+# Filename: 00_configNetwork.sh
 # Purpose: CUI-based AUTO/CUSTOM network configuration generator (.env)
 #
 # Main functions/commands used:
@@ -20,11 +20,11 @@
 #   - lib/env_generator.sh
 #
 # Usage:
-#   ./0101_configNetwork.sh [en|jp]
+#   ./00_configNetwork.sh [en|jp]
 #
 # Notes:
 #   - AUTO mode: only NUM_PJ and port ranges are input
-#   - CUSTOM mode: executes 0101_checkConfigNetwork.sh
+#   - CUSTOM mode: PJALL_CIDR, VPN_POOL, VPNDMZ, Pritunl IPs and DNS are also editable
 #   - Existing shell scripts are NOT modified
 ################################################################################
 
@@ -272,20 +272,20 @@ MESSAGES = {
         "exit_msg2": "",
         "exit_discard": "[D] 破棄",
         "exit_cancel": "[C] キャンセル",
-        # 設定ファイル生成確認ダイアログ
+        # Generate confirmation dialog
         "generate_title": "設定ファイルを生成",
         "generate_msg1": "設定ファイルを生成する準備が",
         "generate_msg2": "できました。続行しますか？",
         "generate_msg3": "",
         "generate_yes": "[Y] はい",
         "generate_no": "[N] いいえ",
-        # 設定ファイル保存結果ダイアログ
+        # Save result dialog
         "env_success_title": "設定ファイル保存成功",
         "env_success_msg": "設定ファイルを保存しました",
         "env_fail_title": "保存失敗",
         "env_fail_msg": "設定ファイルの保存に失敗しました",
         "env_result_ok": "[O] OK",
-        # 既存設定ファイル読み込みダイアログ
+        # Load existing .env dialog
         "load_env_title": "既存設定ファイル",
         "load_env_msg": "既存の設定ファイルが見つかりました。",
         "load_env_msg2": "読み込みますか？",
@@ -422,60 +422,16 @@ class BashRunner:
         )
         return result.returncode, result.stdout, result.stderr
 
-    def _calculate_subnet_py(self, parent_cidr: str, num_pj: int) -> Dict[str, str]:
-        """Calculate subnets using Python ipaddress module (fast, no ipcalc)."""
-        result: Dict[str, str] = {}
-        try:
-            parent_net = IPv4Network(parent_cidr, strict=False)
-            # Calculate bits needed for num_pj subnets (power of 2)
-            subnet_bits = (num_pj - 1).bit_length()
-            new_prefix = parent_net.prefixlen + subnet_bits
-            if new_prefix > 30:
-                raise ValueError(f"Cannot split {parent_cidr} into {num_pj} subnets")
+    def _run_base_config(self, existing_networks: List[str]) -> Dict[str, str]:
+        """Run bash once to get MainLAN/PVE/DMZ/Pritunl/DNS config (slow, cached).
 
-            subnets = list(parent_net.subnets(new_prefix=new_prefix))[:num_pj]
-            for i, subnet in enumerate(subnets, 1):
-                pj_id = f"{i:02d}"
-                result[f"PJ{pj_id}_CIDR"] = str(subnet)
-                # Gateway = last usable IP (or second-to-last if /31, or broadcast if /32)
-                if subnet.prefixlen >= 31:
-                    gw = subnet.broadcast_address
-                else:
-                    gw = subnet.broadcast_address
-                result[f"PJ{pj_id}_GW"] = str(gw)
-        except Exception as e:
-            raise RuntimeError(f"Python subnet calculation failed: {e}")
-        return result
-
-    def _split_pool_py(self, pool_cidr: str, num_pj: int) -> Dict[str, str]:
-        """Split VPN client pool into OpenVPN and WireGuard pools (fast, no ipcalc)."""
-        result: Dict[str, str] = {}
-        try:
-            pool_net = IPv4Network(pool_cidr, strict=False)
-            # Split into two halves: OpenVPN (/25) and WireGuard (/25)
-            ovpn_net, wg_net = list(pool_net.subnets(new_prefix=pool_net.prefixlen + 1))
-
-            result["VPN_POOL"] = pool_cidr
-            result["OVPN_POOL"] = str(ovpn_net)
-            result["WG_POOL"] = str(wg_net)
-
-            # Further split each half into NUM_PJ subnets (/28 for /25)
-            ovpn_subnets = list(ovpn_net.subnets(new_prefix=ovpn_net.prefixlen + (num_pj - 1).bit_length()))[:num_pj]
-            wg_subnets = list(wg_net.subnets(new_prefix=wg_net.prefixlen + (num_pj - 1).bit_length()))[:num_pj]
-
-            for i, subnet in enumerate(ovpn_subnets, 1):
-                result[f"OVPN_POOL{i}"] = str(subnet)
-            for i, subnet in enumerate(wg_subnets, 1):
-                result[f"WG_POOL{i}"] = str(subnet)
-        except Exception as e:
-            raise RuntimeError(f"Python pool split calculation failed: {e}")
-        return result
-
-    def _run_base_config(self) -> Dict[str, str]:
-        """Run bash once to get MainLAN/PVE/DMZ/Pritunl/DNS config (slow, cached)."""
+        existing_networks (bash + Python detection, see get_existing_networks)
+        is injected so that bash does not run detect_existing_networks again.
+        """
         import time
         t0 = time.time()
         _tlog(f"[TIMING] _run_base_config START")
+        detected = " ".join(shlex.quote(c) for c in existing_networks)
         script = f"""
     set -euo pipefail
     SCRIPT_DIR="{SCRIPT_DIR}"
@@ -488,8 +444,8 @@ else
   source "{SCRIPT_DIR}/lib/messages_en.sh"
 fi
 
-# Cache existing networks once for this run
-mapfile -t DETECTED_EXISTING_NETWORKS < <(detect_existing_networks || true)
+# Use networks already detected by the caller (bash + Python merged)
+DETECTED_EXISTING_NETWORKS=({detected})
 detect_existing_networks() {{
     printf "%s\n" "${{DETECTED_EXISTING_NETWORKS[@]}}"
 }}
@@ -594,7 +550,7 @@ done
 
         # Python runtime detection is the primary source because it is more reliable
         # in this TUI context; bash results are merged as supplemental hints.
-        py_networks = self._collect_existing_networks_fallback()
+        py_networks = self._collect_existing_networks_py()
 
         merged: List[IPv4Network] = []
         seen = set()
@@ -618,8 +574,8 @@ done
         )
         return list(self._existing_networks)
 
-    def _collect_existing_networks_fallback(self) -> List[str]:
-        """Collect existing networks from OS/Proxmox runtime sources as fallback."""
+    def _collect_existing_networks_py(self) -> List[str]:
+        """Collect existing networks from OS/Proxmox runtime sources (primary source)."""
         discovered: List[str] = []
 
         def add_cidr(cidr: str) -> None:
@@ -721,7 +677,7 @@ done
 
         reduced.sort(key=lambda n: (int(n.network_address), n.prefixlen))
         result_cidrs = [str(n) for n in reduced]
-        _mlog("INFO", f"Python fallback found {len(result_cidrs)} existing network(s): {', '.join(result_cidrs) if result_cidrs else '(none)'}")
+        _mlog("INFO", f"Python detection found {len(result_cidrs)} existing network(s): {', '.join(result_cidrs) if result_cidrs else '(none)'}")
         return result_cidrs
 
     def _is_valid_cidr(self, cidr: str) -> bool:
@@ -795,36 +751,26 @@ done
         return result
 
     def compute_config(self, num_pj: int, ovpn_start: int, wg_start: int) -> Dict[str, str]:
-        """Compute full configuration: bash once (cached) + Python for subnets/pools."""
+        """Compute base configuration: bash once (cached) + parent CIDR selection."""
         import time
         start_time = time.time()
         _tlog(f"\n[TIMING] compute_config START NUM_PJ={num_pj}")
 
         # Run bash only on first call; reuse cache on subsequent calls
         if not self._base_config:
-            self._base_config = self._run_base_config()
+            self._base_config = self._run_base_config(self.get_existing_networks())
         
-        # Fast Python calculations for subnet/pool (no bash, no ipcalc)
-        t0 = time.time()
-        pj_networks: Dict[str, str] = {}
-        pool_splits: Dict[str, str] = {}
         # Prefer DEFAULT_NETWORK_CIDRS when they are safe to use;
         # otherwise, fall back to bash-derived proposals.
         selected_parents = self._pick_parent_cidrs(num_pj)
         vpndmz = selected_parents.get("VPNDMZ_CIDR", "")
         pjall = selected_parents.get("PJALL_CIDR", "")
         vpn_pool = selected_parents.get("VPN_POOL", "")
-        try:
-            pj_networks = self._calculate_subnet_py(pjall, num_pj)
-            pool_splits = self._split_pool_py(vpn_pool, num_pj)
-        except Exception:
-            pass
-        _tlog(f"[TIMING] Python calc: {(time.time()-t0)*1000:.1f}ms")
 
-        # Merge: base config + Python-calculated values + port ranges
+        # Merge: base config + parent CIDRs + port ranges.
+        # PJxx_CIDR / OVPN_POOLn / WG_POOLn are derived from the parents by
+        # TUIApp._apply_port_ranges().
         config = dict(self._base_config)
-        config.update(pj_networks)
-        config.update(pool_splits)
         # Restore parent CIDRs from resolved/fallback values.
         config["VPNDMZ_CIDR"] = vpndmz
         config["PJALL_CIDR"] = pjall
@@ -2309,6 +2255,59 @@ class TUIApp:
         except curses.error:
             pass
 
+    def _save_env(self, custom: bool) -> bool:
+        """Validate, generate .env and optionally the SVG diagram (SAVE button).
+
+        CUSTOM mode additionally validates the editable fields and asks for
+        confirmation before generating. Returns False to exit the TUI after a
+        successful save, True to stay in the editor.
+        """
+        is_valid, error_msg = self._validate_ports()
+        if not is_valid:
+            self.status = f"{self.msg['status_error']}{error_msg}"
+            return True
+
+        is_valid, error_msg = self._validate_network_conflicts_before_save()
+        if not is_valid:
+            self.status = f"{self.msg['status_error']}{error_msg}"
+            return True
+
+        if custom:
+            # Check all custom fields are filled and valid
+            for field_key, _, _ in self.custom_fields:
+                field_value = self.config.get(field_key, "").strip()
+                if not field_value:
+                    self.status = f"{self.msg['status_error']}{field_key} is required"
+                    return True
+                is_valid, error_msg = self._validate_custom_field(field_key, field_value)
+                if not is_valid:
+                    self.status = f"{self.msg['status_error']}{error_msg}"
+                    return True
+
+            if not self._show_generate_confirm():
+                return True  # User cancelled
+
+        try:
+            self.runner.generate_env(self.config)
+            self._show_env_result(True)  # Show success dialog
+            # Ask about SVG generation
+            if self._show_svg_dialog():
+                try:
+                    self.runner.generate_svg()
+                    self._show_notice_dialog(
+                        self.msg.get("svg_success_title", "Network Diagram"),
+                        self.msg.get("svg_success_msg", "Network diagram added to Proxmox notes."),
+                    )
+                except Exception as svg_exc:
+                    self._show_notice_dialog(
+                        self.msg.get("svg_fail_title", "Network Diagram"),
+                        f"{self.msg.get('svg_fail_msg', 'Failed to add network diagram to Proxmox notes.')} ({svg_exc})",
+                    )
+            return False  # Exit successfully
+        except Exception as exc:
+            self._show_env_result(False, str(exc))  # Show failure dialog
+            return True  # Return to editor, don't exit
+
     def _handle_key(self, ch: int) -> bool:
         if not self.edit_field and ch in (ord("n"), ord("N")):
             self._show_networks_dialog()
@@ -2453,98 +2452,9 @@ class TUIApp:
                     self.edit_buffer = str(self.ovpn_start if self.focus_index == 2 else self.wg_start)
                     self.edit_cursor = len(self.edit_buffer)
                     return True
-                # Left panel: focus 4 SAVE button (AUTO mode only)
-                elif self.focus_index == 4 and self.mode == "AUTO":
-                    is_valid, error_msg = self._validate_ports()
-                    if not is_valid:
-                        self.status = f"{self.msg['status_error']}{error_msg}"
-                        return True
-                    
-                    # CUSTOM mode: validate all custom fields before generating .env
-                    if self.mode == "CUSTOM":
-                        # Check all 8 custom fields are filled and valid
-                        for field_key, _, _ in self.custom_fields:
-                            field_value = self.config.get(field_key, "").strip()
-                            if not field_value:
-                                self.status = f"{self.msg['status_error']}{field_key} is required"
-                                return True
-                            is_valid, error_msg = self._validate_custom_field(field_key, field_value)
-                            if not is_valid:
-                                self.status = f"{self.msg['status_error']}{error_msg}"
-                                return True
-                    
-                    # Show generation confirmation dialog
-                    if not self._show_generate_confirm():
-                        return True  # User cancelled
-                    
-                    try:
-                        self.runner.generate_env(self.config)
-                        self._show_env_result(True)  # Show success dialog
-                        # Ask about SVG generation
-                        if self._show_svg_dialog():
-                            try:
-                                self.runner.generate_svg()
-                                self._show_notice_dialog(
-                                    self.msg.get("svg_success_title", "Network Diagram"),
-                                    self.msg.get("svg_success_msg", "Network diagram added to Proxmox notes."),
-                                )
-                            except Exception as svg_exc:
-                                self._show_notice_dialog(
-                                    self.msg.get("svg_fail_title", "Network Diagram"),
-                                    f"{self.msg.get('svg_fail_msg', 'Failed to add network diagram to Proxmox notes.')} ({svg_exc})",
-                                )
-                        return False  # Exit successfully
-                    except Exception as exc:
-                        self._show_env_result(False, str(exc))  # Show failure dialog
-                        return True
                 # Left panel (right side): focus 12 SAVE button (CUSTOM mode only)
                 elif self.focus_index == 12 and self.mode == "CUSTOM":
-                    is_valid, error_msg = self._validate_ports()
-                    if not is_valid:
-                        self.status = f"{self.msg['status_error']}{error_msg}"
-                        return True
-
-                    is_valid, error_msg = self._validate_network_conflicts_before_save()
-                    if not is_valid:
-                        self.status = f"{self.msg['status_error']}{error_msg}"
-                        return True
-                    
-                    # CUSTOM mode: validate all custom fields before generating .env
-                    # Check all 8 custom fields are filled and valid
-                    for field_key, _, _ in self.custom_fields:
-                        field_value = self.config.get(field_key, "").strip()
-                        if not field_value:
-                            self.status = f"{self.msg['status_error']}{field_key} is required"
-                            return True
-                        is_valid, error_msg = self._validate_custom_field(field_key, field_value)
-                        if not is_valid:
-                            self.status = f"{self.msg['status_error']}{error_msg}"
-                            return True
-                    
-                    # Show generation confirmation dialog
-                    if not self._show_generate_confirm():
-                        return True  # User cancelled
-                    
-                    try:
-                        self.runner.generate_env(self.config)
-                        self._show_env_result(True)  # Show success dialog
-                        # Ask about SVG generation
-                        if self._show_svg_dialog():
-                            try:
-                                self.runner.generate_svg()
-                                self._show_notice_dialog(
-                                    self.msg.get("svg_success_title", "Network Diagram"),
-                                    self.msg.get("svg_success_msg", "Network diagram added to Proxmox notes."),
-                                )
-                            except Exception as svg_exc:
-                                self._show_notice_dialog(
-                                    self.msg.get("svg_fail_title", "Network Diagram"),
-                                    f"{self.msg.get('svg_fail_msg', 'Failed to add network diagram to Proxmox notes.')} ({svg_exc})",
-                                )
-                        return False  # Exit successfully
-                    except Exception as exc:
-                        self._show_env_result(False, str(exc))  # Show failure dialog
-                        return True  # Return to editor, don't exit
+                    return self._save_env(custom=True)
                 # Right panel: focus 4-11 editable fields (maps to custom_fields 0-7) in CUSTOM mode
                 elif self.mode == "CUSTOM" and 4 <= self.focus_index <= 11:
                     field_idx = self.focus_index - 4
@@ -2562,34 +2472,7 @@ class TUIApp:
             
             # AUTO mode: focus 4 is OK button, focus 2-3 are port fields
             if self.focus_index == 4:
-                is_valid, error_msg = self._validate_ports()
-                if not is_valid:
-                    self.status = f"{self.msg['status_error']}{error_msg}"
-                    return True
-                is_valid, error_msg = self._validate_network_conflicts_before_save()
-                if not is_valid:
-                    self.status = f"{self.msg['status_error']}{error_msg}"
-                    return True
-                try:
-                    self.runner.generate_env(self.config)
-                    self._show_env_result(True)  # Show success dialog
-                    # Ask about SVG generation
-                    if self._show_svg_dialog():
-                        try:
-                            self.runner.generate_svg()
-                            self._show_notice_dialog(
-                                self.msg.get("svg_success_title", "Network Diagram"),
-                                self.msg.get("svg_success_msg", "Network diagram added to Proxmox notes."),
-                            )
-                        except Exception as svg_exc:
-                            self._show_notice_dialog(
-                                self.msg.get("svg_fail_title", "Network Diagram"),
-                                f"{self.msg.get('svg_fail_msg', 'Failed to add network diagram to Proxmox notes.')} ({svg_exc})",
-                            )
-                    return False
-                except Exception as exc:
-                    self._show_env_result(False, str(exc))  # Show failure dialog
-                    return True
+                return self._save_env(custom=False)
             if self.focus_index in (2, 3):
                 self.edit_field = "ovpn" if self.focus_index == 2 else "wg"
                 self.edit_buffer = str(self.ovpn_start if self.focus_index == 2 else self.wg_start)
@@ -2916,17 +2799,6 @@ class TUIApp:
         self.edit_buffer = ""
         self.edit_cursor = 0
 
-    def _exec_custom(self) -> None:
-        try:
-            # For CUSTOM mode, we still need to generate .env with edited values
-            self.runner.generate_env(self.config)
-            self._show_env_result(True)  # Show success dialog
-            curses.endwin()
-            script_path = os.path.join(SCRIPT_DIR, "0101_checkConfigNetwork.sh")
-            os.execvp("bash", ["bash", script_path, self.lang])
-        except Exception as exc:
-            self._show_env_result(False, str(exc))  # Show failure dialog
-
     def run(self) -> None:
         # Check if .env file exists and ask to load
         env_path = os.path.join(SCRIPT_DIR, ".env")
@@ -3144,7 +3016,7 @@ def main() -> int:
         if arg in (LANG_EN, LANG_JP):
             lang = arg
         else:
-            print("Usage: ./0101_configNetwork.sh [en|jp]")
+            print("Usage: ./00_configNetwork.sh [en|jp]")
             return 1
 
     if not _ensure_required_packages(lang):

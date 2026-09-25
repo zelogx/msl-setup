@@ -10,14 +10,14 @@
 #
 # Main functions/commands used:
 #   - qm: Proxmox VM management
-#   - wget/curl: Download cloud-init images
+#   - wget: Download cloud-init images
 #   - sha256sum: Verify image integrity
 #   - ssh: Verify VM accessibility
 #
 # Dependencies:
 #   - common.sh: Logging functions
 #   - qemu-guest-agent: Cloud-init completion detection
-#   - wget or curl: Image download
+#   - wget: Image download
 #
 # Usage:
 #   source lib/vm_utils.sh
@@ -67,11 +67,6 @@ collect_existing_vmids() {
 ################################################################################
 select_image_storage() {
     # Use pvesh JSON output to avoid stray stderr lines from pvesm
-    if ! command -v pvesh >/dev/null 2>&1; then
-        log_error "pvesh command not found; cannot detect image storage. Aborting."
-        die "pvesh not found on this host"
-    fi
-
     log_info "Querying storage list via pvesh..."
     local storage_json
     storage_json=$(pvesh get /storage --output-format json 2>/dev/null) || true
@@ -152,7 +147,7 @@ check_orphan_cloudinit_volumes() {
 }
 
 # Note: Do NOT run `select_image_storage` at source time here.
-# Selection should be performed by the caller (e.g. 02_deploy_pritunl.sh)
+# Selection should be performed by the caller (e.g. 0201_createPritunlVM.sh)
 # so that scripts can control when interactive prompts or pvesm calls occur.
 
 ################################################################################
@@ -162,38 +157,26 @@ check_orphan_cloudinit_volumes() {
 # Main commands/functions used:
 #   - pvesh: Query cluster-wide VM/CT resources
 #   - jq: Parse VMID list from cluster resources
-#   - qm/pct status: Fallback local availability check
 ################################################################################
 find_available_vmid() {
     local start_vmid="${1:-100}"
     local candidate="$start_vmid"
     local used_vmids=""
+    local inventory
     
     printf "$MSG_VM_VMID_SEARCH\\n" "$start_vmid"
     log_info "Searching for available VMID starting from $start_vmid"
 
-    # Prefer cluster-wide inventory so IDs used on other nodes are also reserved.
-    if command -v pvesh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-        used_vmids=$(pvesh get /cluster/resources --type vm --output-format json 2>/dev/null \
-            | jq -r '.[] | select(.vmid != null) | .vmid' 2>/dev/null \
-            | sort -n \
-            | tr '\n' ' ' \
-            || true)
-    fi
+    # Use cluster-wide inventory so IDs used on other nodes are also reserved.
+    # An empty list (no VM/CT at all) is valid; a pvesh failure is not.
+    inventory=$(pvesh get /cluster/resources --type vm --output-format json 2>/dev/null) \
+        || die "Failed to get cluster-wide VM/CT inventory (pvesh get /cluster/resources)"
+    used_vmids=$(jq -r '.[] | select(.vmid != null) | .vmid' <<<"$inventory" | sort -n | tr '\n' ' ')
 
-    if [ -n "$used_vmids" ]; then
-        log_info "Using cluster-wide VM/CT inventory for VMID allocation"
-        while echo " $used_vmids " | grep -q " $candidate "; do
-            log_info "  VMID $candidate is in use in cluster (VM or CT), trying next..."
-            candidate=$((candidate + 1))
-        done
-    else
-        log_warn "Cluster-wide VMID inventory unavailable; falling back to local checks"
-        while qm status "$candidate" >/dev/null 2>&1 || pct status "$candidate" >/dev/null 2>&1; do
-            log_info "  VMID $candidate is in use (local VM or CT), trying next..."
-            candidate=$((candidate + 1))
-        done
-    fi
+    while echo " $used_vmids " | grep -q " $candidate "; do
+        log_info "  VMID $candidate is in use in cluster (VM or CT), trying next..."
+        candidate=$((candidate + 1))
+    done
     
     printf "$MSG_VM_VMID_ALLOCATED\\n" "$candidate"
     log_info "Allocated VMID: $candidate"
@@ -250,7 +233,7 @@ ensure_ssh_key() {
 # Description: Download cloud-init image with hash verification
 #
 # Main commands/functions used:
-#   - wget/curl: Download image and checksum file
+#   - wget: Download image and checksum file
 #   - sha256sum: Verify image hash
 ################################################################################
 download_cloud_image() {
@@ -271,20 +254,10 @@ download_cloud_image() {
     
     # Download image
     echo "$MSG_VM_IMAGE_DOWNLOAD"
-    if command -v wget >/dev/null 2>&1; then
-        if ! wget -q -O "$cache_path" "$image_url"; then
-            log_error "wget failed to download image"
-            rm -f "$cache_path"
-            die "Failed to download cloud-init image"
-        fi
-    elif command -v curl >/dev/null 2>&1; then
-        if ! curl -s -L -o "$cache_path" "$image_url"; then
-            log_error "curl failed to download image"
-            rm -f "$cache_path"
-            die "Failed to download cloud-init image"
-        fi
-    else
-        die "Neither wget nor curl found. Please install wget or curl."
+    if ! wget -q -O "$cache_path" "$image_url"; then
+        log_error "wget failed to download image"
+        rm -f "$cache_path"
+        die "Failed to download cloud-init image"
     fi
     
     log_info "Download completed: $cache_path"
@@ -318,22 +291,11 @@ verify_image_hash() {
     
     # Download checksum file
     local checksum_file="/tmp/SHA256SUMS.$$"
-    if command -v wget >/dev/null 2>&1; then
-        wget -q -O "$checksum_file" "$checksum_url" || {
-            log_error "Failed to download checksum file"
-            rm -f "$checksum_file"
-            return 1
-        }
-    elif command -v curl >/dev/null 2>&1; then
-        curl -sL -o "$checksum_file" "$checksum_url" || {
-            log_error "Failed to download checksum file"
-            rm -f "$checksum_file"
-            return 1
-        }
-    else
-        log_error "Neither wget nor curl found"
+    wget -q -O "$checksum_file" "$checksum_url" || {
+        log_error "Failed to download checksum file"
+        rm -f "$checksum_file"
         return 1
-    fi
+    }
     
     # Extract expected hash for the specific image
     local expected_hash

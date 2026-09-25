@@ -1,20 +1,39 @@
 #!/usr/bin/env bash
+################################################################################
+# Zelogx™ Multi-Project Secure Lab Setup
+#
+# © 2025 Zelogx. Zelogx™ and the Zelogx logo are trademarks
+# of the Zelogx Project. All other marks are property of their respective owners.
+#
+# Filename: msldhcp
+# Purpose: Deploy a dedicated DHCP-only LXC container for a Proxmox SDN VNet
+#          (opt-in; Proxmox SDN VXLAN zones have no built-in DHCP)
+#
+# Main functions/commands used:
+#   - pct / pvesh: Create the CT and read SDN subnet DHCP ranges
+#   - systemd path unit: Re-export DHCP settings when SDN subnets change
+#   - dnsmasq (inside the CT): DHCP server
+#
+# Dependencies:
+#   - Proxmox VE 9.x; pvesh, pct, qm, pveam, pvesm, jq, python3, systemctl
+#   - A Debian 13 standard CT template (pveam)
+#
+# Usage:
+#   msldhcp [--vmid ID] [--vnet VNET] [options]   (see --help)
+#   Installed to /usr/local/bin/msldhcp by 0102_setupNetwork.sh.
+#
+# Notes:
+#   - Standalone command: does not source lib/ and logs to the console only
+#   - DHCP source: Datacenter > SDN > VNets > Subnets. The host extracts only
+#     the selected VNet's DHCP settings into
+#     /var/lib/mslsetup/dhcp/<vnet>/dhcp.env, mounted read-only inside the CT.
+#     /etc/pve is used only as the Proxmox SDN source and is not bind-mounted.
+#   - A systemd path unit watches Proxmox SDN subnet configuration and
+#     refreshes the exported DHCP state when the GUI settings change.
+#     The CT watches the read-only dhcp.env and restarts dnsmasq itself.
+#   - Not part of tenant isolation; stopping it only stops DHCP updates.
+################################################################################
 set -Eeuo pipefail
-
-# deploy-vnet-dhcp-ct-v9-strict-api.sh
-# Deploy a dedicated DHCP-only LXC container for a Proxmox SDN VNet.
-#
-# Tested design target: Proxmox VE 9.x
-# DHCP source: Datacenter > SDN > VNets > Subnets
-#
-# The host extracts only the selected VNet's DHCP settings into:
-#   /var/lib/mslsetup/dhcp/<vnet>/dhcp.env
-# The directory is mounted read-only inside the CT.
-# /etc/pve is used only as the Proxmox SDN source and is not bind-mounted.
-#
-# A systemd path unit watches Proxmox SDN subnet configuration and
-# automatically refreshes the exported DHCP state when the GUI settings change.
-# The CT watches the read-only exported dhcp.env and restarts dnsmasq itself.
 
 PROG="${0##*/}"
 

@@ -46,7 +46,7 @@ MSG_UNINSTALL_STEP1="Step 1: Deleting RBAC settings..."
 MSG_UNINSTALL_STEP2="Step 2: Destroying Pritunl VM..."
 MSG_UNINSTALL_STEP3="Step 3: Restoring cluster configuration..."
 MSG_UNINSTALL_STEP4="Step 4: Restoring network configuration..."
-MSG_UNINSTALL_STEP5="Step 5: Restoring quota enforcement settings..."
+MSG_UNINSTALL_STEP5="Step 5: Removing network diagram (SVG and node notes)..."
 MSG_ASSUMING_NO_RBAC_OR_NO_CORPORATE_EDITION="Skipping RBAC deletion step (not Corporate Edition or script not found)."
 MSG_UNINSTALL_COMPLETE="Uninstall completed successfully."
 MSG_UNINSTALL_FAILED="Uninstall failed. Please check the logs."
@@ -215,12 +215,12 @@ MSG_SVG_NOTE_PRESERVE="  - Existing note content will be preserved"
 MSG_SVG_NOTE_LOCATION="Display location: Datacenter > %s > Summary > Notes"
 MSG_SVG_NOTE_CONFIRM="Add diagram?"
 
-# SDN (01_setup_sdn.sh) console messages
+# SDN (0102_setupNetwork.sh) console messages
 MSG_SDN_BACKUP_START="Taking initial backup of SDN and firewall configuration..."
 MSG_SDN_RESTORE_EXISTING="Existing backup found. Restoring SDN and firewall configuration to backup state..."
 MSG_SDN_RESTORE_DONE="Restore to backup state completed"
 MSG_SDN_RESTORE_ONLY_DONE="SDN configuration has been restored to backup state."
-MSG_SDN_RESTORE_ONLY_NO_BACKUP="Restore-only requested but no backup exists; skipping restore."
+MSG_SDN_RESTORE_NO_BACKUP="No SDN backup found; removed MSL firewall rules and gateway hooks only."
 
 MSG_SDN_APPLY_START="Applying SDN configuration..."
 MSG_SDN_IPSET_START="Starting IPSet creation..."
@@ -239,7 +239,9 @@ MSG_SDN_ROUTE_CONFLICT="VPN pool network is directly connected. Skipping custom 
 MSG_SDN_ROUTE_SKIP_NO_IFACE="vpndmzvn interface not found. Skipping return route configuration."
 
 MSG_SDN_DONE="SDN configuration completed."
-MSG_SDN_ENV_MISSING=".env file not found. Please run 00_check_env.sh first."
+MSG_SDN_ENV_MISSING=".env file not found. Please run ./00_configNetwork.sh first."
+MSG_SDN_RESERVED_NAMES_IN_USE="These names are reserved for MSL Setup but already exist: %s. Rename or delete them, then run ./01_networkSetup.sh again."
+MSG_SDN_CLUSTER_MODE_ENABLED="MSL Setup cluster mode is enabled. Run ./01_networkSetup.sh (or ./01_networkSetup.sh --restore) instead of this script."
 
 # Messages for VM cleanup prompts
 MSG_PREV_VM_FOUND="Found previously created VM (VMID: %s)."
@@ -258,13 +260,6 @@ MSG_SVG_NOTICE="Generating network diagram now. Please review."
 MSG_SVG_URL_LABEL="Network diagram URL:"
 MSG_SVG_GUI_LABEL="Or via Proxmox GUI:"
 
-# Usage / argument validation (v2.0)
-MSG_USAGE_SETUP_SDN="Usage: 01_setup_sdn.sh [en|jp] [--restore]\n  en|jp       : Console language (default: en)\n  --restore   : Restore SDN/firewall to backup state and exit\nNotes:\n  - Requires .env file with network variables\n  - Will perform backup on first run, then idempotent reapply"
-MSG_USAGE_ROUTER_PROMPT="Usage: router_prompt.sh [en|jp]\n  en|jp : Console language (default: en)\nNotes:\n  - Prints manual router configuration guidance (static routes & port forwards)\n  - Values are expanded from .env"
-
-# Library usage (env & svg generators)
-MSG_USAGE_ENV_GENERATOR="Usage: env_generator.sh (library)\n  This file is a library; source it after populating CONFIG associative array.\nNotes:\n  - Not intended for direct execution\n  - Generates .env when called via generate_env()"
-MSG_USAGE_SVG_GENERATOR="Usage: svg_generator.sh (library)\n  This file is a library; source it then call generate_svg_diagram.\nNotes:\n  - Requires existing .env file\n  - Adds SVG to Proxmox notes if user confirms"
 
 
 # Additional UI messages

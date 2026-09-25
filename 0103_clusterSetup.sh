@@ -112,10 +112,6 @@ msg() {
         en:CLUSTER_ENV_NOT_FOUND) printf '%s' 'cluster.env not found: %s' ;;
         jp:MAIN_VIP_NOT_SET) printf '%s' '%s に MAIN_VIP が設定されていません' ;;
         en:MAIN_VIP_NOT_SET) printf '%s' 'MAIN_VIP is not set in %s' ;;
-        jp:CLUSTER_ENV_ALREADY_HAS) printf '%s' 'cluster.env に既に記録があります: %s' ;;
-        en:CLUSTER_ENV_ALREADY_HAS) printf '%s' 'cluster.env already has record: %s' ;;
-        jp:APPENDED_CLUSTER_ENV) printf '%s' 'cluster.env に追記しました: %s' ;;
-        en:APPENDED_CLUSTER_ENV) printf '%s' 'Appended to cluster.env: %s' ;;
         jp:NOT_CLUSTER_EXIT) printf '%s' 'このノードはクラスタに参加していません。' ;;
         en:NOT_CLUSTER_EXIT) printf '%s' 'This node is not part of a cluster.' ;;
         jp:CLUSTER_NOT_ENABLED_SKIP) printf '%s' 'MSL Setup のクラスタ構成は有効化されていないため、del-node / disable-cluster をスキップします。' ;;
@@ -297,29 +293,6 @@ resolve_vip_ip() {
     fi
 
     printf '%s\n' "${main_vip%%/*}"
-}
-
-################################################################################
-# Function: append_cluster_env_record
-# Description: Append a single marker line to cluster.env if not already present.
-#
-# Main commands/functions used:
-#   - grep: Deduplicate marker lines
-#   - printf: Append record to file
-################################################################################
-append_cluster_env_record() {
-    local record="$1"
-
-    mkdir -p "${STATE_DIR}"
-    touch "${CLUSTER_ENV_PATH}"
-
-    if grep -Fxq "$record" "${CLUSTER_ENV_PATH}"; then
-        log_info "$(printf "$(msg CLUSTER_ENV_ALREADY_HAS)" "${record}")"
-        return 0
-    fi
-
-    printf '%s\n' "$record" >> "${CLUSTER_ENV_PATH}"
-    log_info "$(printf "$(msg APPENDED_CLUSTER_ENV)" "${record}")"
 }
 
 ################################################################################
@@ -530,7 +503,6 @@ main() {
     local status_output
     local target_ips
     local ip
-    local master_ip
     local pjall_cidr
     local vip_ip
 

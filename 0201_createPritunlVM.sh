@@ -5,12 +5,12 @@
 # © 2025 Zelogx. Zelogx™ and the Zelogx logo are trademarks
 # of the Zelogx Project. All other marks are property of their respective owners.
 #
-# Filename: 02_deploy_pritunl.sh
+# Filename: 0201_createPritunlVM.sh
 # Purpose: Deploy Pritunl VM with AlmaLinux 9.7 using cloud-init
 #
 # Main functions/commands used:
 #   - qm: Proxmox VM management
-#   - wget/curl: Download cloud-init images
+#   - wget: Download cloud-init images
 #   - ssh/scp: Remote access and file transfer
 #
 # Dependencies:
@@ -19,11 +19,12 @@
 #   - lib/vm_utils.sh: VM deployment functions
 #   - .env: Environment configuration
 #   - qemu-guest-agent: Cloud-init completion detection
-#   - wget or curl: Image download
+#   - wget: Image download
 #   - jq: JSON processing for SSH key encoding
 #
 # Usage:
-#   ./02_deploy_pritunl.sh [en|jp]
+#   ./0201_createPritunlVM.sh [en|jp] [--destroy]
+#   Normally called from 02_vpnSetup.sh / 99_uninstall.sh.
 #
 # Notes:
 #   - Automatically allocates VMID starting from 100
@@ -130,7 +131,7 @@ readonly ICMP_RULE_COMMENT3_FIXED="MSLSetup ICMP Prtn MAINLAN ANY"
 # Logging Setup
 # ============================================================================
 
-setup_logging "02_deploy_pritunl"
+setup_logging "0201_createPritunlVM"
 
 ################################################################################
 # Function: find_rule_pos_by_comment
@@ -265,11 +266,7 @@ if [ -f "$VMID_RECORD_FILE" ]; then
     if qm status "$PREVIOUS_VMID" >/dev/null 2>&1; then
         echo ""
         msg_printf PREV_VM_FOUND "$PREVIOUS_VMID"
-        if [ "$DESTROY_ONLY" = true ]; then
-            msg_printf PREV_VM_AUTOREMOVE
-        else
-            msg_printf PREV_VM_AUTOREMOVE
-        fi
+        msg_printf PREV_VM_AUTOREMOVE
         log_info "Found previously created VM (VMID: $PREVIOUS_VMID) by this script"
         
         # Stop VM if running
@@ -285,6 +282,8 @@ if [ -f "$VMID_RECORD_FILE" ]; then
         msg_printf VM_DESTROYING
         qm destroy "$PREVIOUS_VMID" --purge
         log_info "Previous VM (VMID: $PREVIOUS_VMID) has been purged"
+        # The cicustom user-data snippet is not removed by qm destroy
+        rm -f "/var/lib/vz/snippets/pritunl-vm-${PREVIOUS_VMID}-userdata.yml"
         
         # Clean up known_hosts
         if [ -n "$PT_IG_IP" ]; then
@@ -302,7 +301,8 @@ if [ -f "$VMID_RECORD_FILE" ]; then
             exit 0
         fi
     else
-        # VM record exists but VM not found
+        # VM record exists but VM not found: drop its leftover user-data snippet
+        rm -f "/var/lib/vz/snippets/pritunl-vm-${PREVIOUS_VMID}-userdata.yml"
         if [ "$DESTROY_ONLY" = true ]; then
             echo ""
             echo "No existing VM found (VMID: $PREVIOUS_VMID not found in Proxmox)."
@@ -327,7 +327,7 @@ fi
 
 # Check vpndmzvn exists
 if ! ip link show vpndmzvn >/dev/null 2>&1; then
-    die "vpndmzvn interface not found. Please run Phase 1 (01_setup_sdn.sh) first."
+    die "vpndmzvn interface not found. Please run ./01_networkSetup.sh first."
 fi
 log_info "  vpndmzvn interface: OK"
 

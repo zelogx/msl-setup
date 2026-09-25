@@ -70,6 +70,8 @@
 - **消した場合のリスク**: 初回実行前から同名の zone / vnet（`vpndmz`, `devpj01`, `vnetpj01` など）が存在した環境では、今は**既存のものを黙って流用**しているが、消すと `pvesh create` が失敗して止まるようになる（こちらの方が安全とも言える）。IPSet は「作れない＝異常」という方針で存在チェックをしていない（[lib/common.sh:236-239](../lib/common.sh#L236-L239)）ので、方針をそろえるかどうかの判断材料にもなる。
 - **確度**: 中（「作成前に必ず restore が走る」という現在のフローが前提）
 - **補足（2026-09-24、ユーザー）**: `vpndmz` / `devpjXX` / `vpndmzvn` / `vnetpjXX` は、Wiki の [Environmental Integrity & System Impact Report](https://github.com/zelogx/msl-setup/wiki/Environmental-Integrity-&-System-Impact-Report) に MSL Setup が使う名前として記載されている。ただし「予約名であり、利用者は使わないこと」とは明記されていないので、後で Wiki に追記する予定。追記したら、同じ名前が既にある場合の扱い（流用するのか停止するのか）もあわせて決める。
+- **状態: 対応済み（「止める」、ユーザー判断 2026-09-25、コミット `71e6d74`・`e39860c`）**。初回の導入時（0102 の通常実行でバックアップが無いとき）に、予約名（zone `vpndmz` / `devpjNN`、vnet `vpndmzvn` / `vnetpjNN`、IPSet `devpjs` / `mainlan` / `vpn_guest_pool` / `all_private_ip` / `vxlan_peers`）が既にあれば、バックアップを取る前に名前を表示して終了する（バックアップに同名のものが入ると、以後の restore が MSL の作ったものを削除しなくなるため）。`create_sdn_zone` / `create_sdn_vnet` の「既にあれば流用」をやめ、作成に失敗したら die する（`create_ipset` と同じ方針）。予約名は Wiki の元原稿に記載した。偽の pvesh で、予約名なし・zone / vnet / IPSet の各競合・似た名前（`devpj1`, `devpj001`, `vpndmz2` など）を確認した。pve20 で、手で作った `vpndmz` があると 01 が何も変更せずに止まり（`sdn_backup/` も作られない）、削除後は通常どおり導入でき、再実行も完了することを確認した（2026-09-25）。
+- **移行時の注意**: 以前の版で、同名の zone / vnet を流用した状態で導入していた環境では、そのオブジェクトがバックアップに入っているので restore で削除されず、再実行が作成時に止まる。
 
 ### A-2. 0102 の DC アクセスルール削除が restore と二重
 - **場所**: [0102_setupNetwork.sh:211](../0102_setupNetwork.sh#L211)、[0102_setupNetwork.sh:233](../0102_setupNetwork.sh#L233)（`remove_msl_dc_access_rules`、定義は [0102:145-160](../0102_setupNetwork.sh#L145-L160)）
@@ -79,6 +81,7 @@
 - **確度**: 高（211・233 行目について）
 - **状態: 後回し（致命的ではない、ユーザー判断 2026-09-24）**
 - **補足（2026-09-24）**: F-4 の修正で、`remove_msl_dc_access_rules` は `msl_delete_dc_rules_matching` を呼ぶだけの関数になった。restore のパターンにも同じルールが含まれるので、restore の後に呼ぶ箇所（現在の 0102:176・198 付近）が冗長である点は変わらない。行番号は変わっている。
+- **状態: 対応済み（コミット `16904b4`）**。restore の直後にある `remove_msl_dc_access_rules` / `remove_msl_project_inet_drop_rules` の呼び出し（`--restore` 時と通常実行時の計 3 か所）を削除した。restore の `MSL_0102_RULE_COMMENT_REGEX` に同じルールが含まれることを確認済み。「`--restore` 指定かつバックアップ無し」の分岐の呼び出しは残した。pve20 で `01 --restore` と `01` が完了することを確認した（2026-09-25）。
 
 ### A-3. `/etc/network/interfaces.d/sdn` から旧 post-up/pre-down 行を除去する処理
 - **場所**: [lib/common.sh:627-635](../lib/common.sh#L627-L635)（`persist_project_gateway_hooks` の中）
@@ -123,6 +126,7 @@
 - **根拠**: PVE 9 の ifupdown2 が提供するのは `ifreload` / `ifup` / `ifdown` / `ifquery` で、このホストにも `ifreload2` は無い（確認済み）。`mslcm` 側は `ifreload` だけを使っている（[mslcm:732](../mslcm#L732)、[:1019](../mslcm#L1019)）。
 - **消した場合のリスク**: なし（`ifreload2` を提供するディストリビューションは把握していない）。
 - **確度**: 高（PVE 9 環境について）
+- **状態: 対応済み（コミット `9da34ec`）**。`ifreload -a` だけにした。pve20 で 01 の実行後に vpndmzvn / vnetpj01 に GW の IP が付くことを確認した（2026-09-25）。
 
 ### B-2. mslcm の `ipcalc -n` / `ipcalc -b` フォールバック
 - **場所**: [mslcm:186-189](../mslcm#L186-L189)（`ip_in_cidr`）、[mslcm:1039-1041](../mslcm#L1039-L1041)（`get_valid_vip`）
@@ -130,6 +134,7 @@
 - **根拠**: PVE（Debian）の `ipcalc` は `Network:` / `Broadcast:` 形式で出力する（このホストで確認済み）。`00_configNetwork.sh` が入れるのも Debian の `ipcalc` パッケージ（[00_configNetwork.sh:105](../00_configNetwork.sh#L105)）。`lib/network.sh` や `lib/common.sh` はこの形式を前提にしていてフォールバックを持たないので、ipcalc-ng の環境ではどのみち他の箇所が壊れる。
 - **消した場合のリスク**: ipcalc-ng に入れ替えた環境で、mslcm の VIP 入力チェックが失敗するようになる（ただし前述のとおり、他の処理も同様に動かない）。
 - **確度**: 高
+- **状態: 対応済み（コミット `9da34ec`）**。ipcalc-ng 形式のフォールバックを削除した（取得できなければエラーにするチェックは残した）。Debian の ipcalc の出力で `ip_in_cidr` を確認し、pve13 で enable-cluster の VIP 入力が通り、VIP が vmbr0 に付くことを確認した（2026-09-25）。
 
 ### B-3. keepalived `auth_pass` の固定値フォールバック
 - **場所**: [mslcm:1234-1237](../mslcm#L1234-L1237)
@@ -137,6 +142,7 @@
 - **根拠**: `tr -dc 'A-Za-z0-9' </dev/urandom | head -c 8` が空を返すのは `/dev/urandom` が読めない場合くらいで、PVE では実質起きない。
 - **消した場合のリスク**: なし。むしろ、固定値が Pritunl VM の root パスワード（C-1）と同じ文字列になっている点の方が気になる。
 - **確度**: 高
+- **状態: 対応済み（コミット `9da34ec`）**。固定値へのフォールバックをやめ、生成できなければエラーで停止するようにした。pve13 で `AUTH_PASS` が英数字 8 文字で生成されることを確認した（2026-09-25）。
 
 ### B-4. wget が無いときの curl 分岐
 - **場所**: [lib/vm_utils.sh:280-288](../lib/vm_utils.sh#L280-L288)（`download_cloud_image`）、[lib/vm_utils.sh:327-336](../lib/vm_utils.sh#L327-L336)（`verify_image_hash`）
@@ -144,6 +150,7 @@
 - **根拠**: 0201 は事前チェックで `wget` を必須にしており、無ければ die する（[0201_createPritunlVM.sh:341-345](../0201_createPritunlVM.sh#L341-L345)）。そのため curl の分岐と「どちらも無い」分岐には到達しない。
 - **消した場合のリスク**: なし（将来 wget を必須から外すなら、この分岐が必要になる）。
 - **確度**: 高
+- **状態: 対応済み（コミット `9da34ec`）**。curl の分岐を削除し、ヘッダの記述を wget に揃えた。pve20 で 0201 のイメージ取得とハッシュ検証が成功することを確認した（2026-09-25）。
 
 ### B-5. VMID 採番のローカルチェック
 - **場所**: [lib/vm_utils.sh:190-196](../lib/vm_utils.sh#L190-L196)
@@ -151,12 +158,15 @@
 - **根拠**: `pvesh` は PVE 標準、`jq` は 0201 の必須チェックに含まれている。この分岐に入るのは `pvesh get` が失敗したとき（pmxcfs の異常など）だけで、その状況では後続の `qm create` も失敗する可能性が高い。
 - **消した場合のリスク**: クラスタ API が一時的に失敗したとき、フォールバックせずに止まるようになる（ローカルチェックでは他ノードの VMID を検出できないので、止まる方が安全とも言える）。
 - **確度**: 中
+- **訂正（2026-09-25）**: フォールバックに入るのは pvesh の失敗時だけではなかった。VM / CT が 1 つも無いと一覧が空になり、「取得できなかった」と区別されずにローカルチェックへ進み、「Cluster-wide VMID inventory unavailable」の WARN を出していた（採番結果は正しい）。
+- **状態: 対応済み（コミット `9da34ec`）**。pvesh の一覧だけを使い、空の一覧は正常として扱う。pvesh が失敗したら停止する。ローカルチェックは削除した。偽の pvesh で一覧あり（CT を含む）・空・失敗の 3 ケースを確認し、pve20 で VM が無い状態から VMID 100 が採番され、WARN が出ないことを確認した（2026-09-25）。
 
 ### B-6. `pvesh` の存在チェック
 - **場所**: [lib/vm_utils.sh:70-73](../lib/vm_utils.sh#L70-L73)、[lib/vm_utils.sh:176](../lib/vm_utils.sh#L176)
 - **根拠**: Proxmox ホスト上でしか動かないスクリプトで、`pvesh` は必ず存在する。
 - **消した場合のリスク**: なし。
 - **確度**: 高
+- **状態: 対応済み（コミット `9da34ec`）**。2 か所とも削除した（`find_available_vmid` 側は B-5 と一緒に変更）。
 
 ### B-7. pritunl.conf 編集の jq → python3 → エラー
 - **場所**: [lib/pritunl_install.sh:421-452](../lib/pritunl_install.sh#L421-L452)
@@ -164,6 +174,7 @@
 - **根拠（推測）**: AlmaLinux 9 GenericCloud イメージには dnf の依存として python3 が必ず入っている。jq は既定では入っておらず、cloud-init の `packages` にも無い（[lib/vm_utils.sh:453-456](../lib/vm_utils.sh#L453-L456)）。つまり実際に使われているのは python3 の経路で、jq の経路と「どちらも無い」分岐は通っていない可能性が高い。
 - **消した場合のリスク**: イメージの内容が変わった場合に影響する。どちらか一方の経路に統一する場合は、cloud-init の `packages` で明示的にインストールすると確実。
 - **確度**: 低（推測。イメージの内容は未確認）
+- **状態: 後回し**。VM 内で動く処理なので、`pritunl_install.sh` の作り直し（F-8 を参照）で扱う。
 
 ### B-8. 旧 `mslsetup-route` フックの削除
 - **場所**: [lib/common.sh:496-513](../lib/common.sh#L496-L513)（`persist_vpn_pool_route` / `remove_vpn_pool_route_hooks`）、呼び出しは [0102:213](../0102_setupNetwork.sh#L213)、[0102:221](../0102_setupNetwork.sh#L221)
@@ -171,6 +182,8 @@
 - **根拠**: 現在の戻り経路（`VPN_POOL via PT_EG_IP`）は `mslsetup-vxlan-gw` フックで設定している（[lib/common.sh:598](../lib/common.sh#L598)）。v1.x からの直接アップグレードはサポートされていない。`persist_vpn_pool_route` はどこからも呼ばれていない。
 - **消した場合のリスク**: 旧版のフックが残ったホストで `--restore` しても、そのフックが消えなくなる。どのバージョンまで `mslsetup-route` を作っていたかは未確認。
 - **確度**: 中
+- **調査（2026-09-25）**: リリースされた版は `mslsetup-route` フックを一度も作っていない。v1.4.6 と v2.0-a は戻り経路を `interfaces.d/sdn` の post-up 行で設定しており（A-3 で後始末済み）、git 上で `mslsetup-route` が初めて現れる `257d934`（v2.0b 完了）の時点ですでに削除処理しか無い。
+- **状態: 対応済み（コミット `9da34ec`）**。`remove_vpn_pool_route_hooks` と 0102 からの 2 か所の呼び出しを削除し、CLAUDE.md の状態ファイルの表からも行を削除した。pve20 で `01 --restore` と `01` が完了することを確認した（2026-09-25）。
 
 ### B-9. DHCP range 設定時の subnet ID 組み立て
 - **場所**: [lib/common.sh:422-427](../lib/common.sh#L422-L427)（`set_vnet_subnet_dhcp_range`）
@@ -178,6 +191,8 @@
 - **根拠**: 直前の [0102:274](../0102_setupNetwork.sh#L274) で subnet を作成したばかりなので、ID は取得できるはず。また、組み立てている形式 `${vnet}-<ip>-<mask>` は、同じファイルのコメント（[lib/common.sh:335](../lib/common.sh#L335) の「subnet ID は zone-network-mask 形式」）と食い違っている。実際の ID が zone 名始まりなら、このフォールバックは正しい ID にならない。
 - **消した場合のリスク**: 取得に失敗した時点でエラーになる（現状でも、組み立てた ID が誤っていれば `pvesh set` が失敗するので、結果は大きく変わらない）。
 - **確度**: 中（subnet ID の実際の形式は実機で確認していない）
+- **実機での確認（2026-09-25）**: pve20 で、subnet ID が `devpj01-172.16.96.0-24`（`<zone>-<ip>-<mask>` 形式）であることを確認した。フォールバックが組み立てる `vnetpj01-...` は誤りだった。
+- **状態: 対応済み（コミット `54e4a4c`）**。フォールバックを削除し、ID が取れなければ `log_error` して `return 1`、0102 側で `die`（ログのパスを表示）するようにした。偽の pvesh で ID が取れる場合と取れない場合を確認し、pve20 で `01_networkSetup.sh` の実行後に vnetpj01 の subnet に dhcp-range（172.16.96.1〜.252）が設定されていることを確認した（2026-09-25）。
 
 ### B-10. `dhcp-range` 削除の `""` 代替
 - **場所**: [lib/common.sh:460-466](../lib/common.sh#L460-L466)
@@ -185,6 +200,7 @@
 - **根拠（推測）**: 対象は PVE 9.0+ で、`-delete` は PVE の API で一般的に使えるパラメータ。
 - **消した場合のリスク**: 古い PVE で消せなくなる（対象外のバージョン）。
 - **確度**: 低（推測）
+- **状態: 対応済み（コミット `9da34ec`）**。PVE 9.1.9 の `PVE/API2/Network/SDN/Subnets.pm` で subnet の更新が `delete` パラメータに対応していることを確認し、`""` による代替を削除した。pve20 で `01 --restore` と `01` が完了することを確認した（2026-09-25）。
 
 ### B-11. ホスト FW 有効化に失敗したときの「すでに有効かも」
 - **場所**: [0102_setupNetwork.sh:352-358](../0102_setupNetwork.sh#L352-L358)
@@ -264,18 +280,22 @@
 - **重複と判断した根拠**: 内容はほぼ同じで、priority の値だけが違う。出力先をパラメータにすれば 1 つにできる。
 - **消した場合のリスク**: 統合するときに、どちらか一方だけに入っている差分を落とさないよう注意が必要（現時点では差分は見当たらない）。片方だけ修正されて設定が食い違うリスクは今の方が大きい。
 - **確度**: 高
+- **経緯（推測）**: 2 つのテンプレートは同じコミット（`257d934`、v2.0b 完了）で追加されていて、git に経緯は残っていない。`render_keepalived_conf` の書き込み先がローカルの固定パスだったため、一時ファイルに書いて scp する add-node では使えず、コピーしたと考えられる。
+- **状態: 対応済み（コミット `a21931c`）**。`render_keepalived_conf` に出力先の引数を追加し、add-node のヒアドキュメントを削除した。新旧で同じ引数から生成した内容が 1 バイトも違わないことを確認した。pve13 で `01_networkSetup.sh` を実行し、pve14 / pve15 の keepalived.conf と MASTER の差分が priority の行だけであること、MASTER の keepalived を止めると VIP が pve14 に移ることを確認した（2026-09-25）。
 
 ### C-10. zone peers の更新・削除で vpndmz だけ別コピー
 - **場所**: [mslcm:1146-1164](../mslcm#L1146-L1164) と [:1166-1190](../mslcm#L1166-L1190)（`update_zone_peers`）、[mslcm:653-666](../mslcm#L653-L666) と [:668-688](../mslcm#L668-L688)（`remove_zone_peers`）
 - **重複と判断した根拠**: `vpndmz` と `devpjXX` で同じ処理を繰り返している（違いは「zone が見つからないときに warn を出すか」だけ）。ループの中で `local` を再宣言している（[mslcm:1167](../mslcm#L1167)）。
 - **消した場合のリスク**: 統合するときに warn の挙動をそろえる必要がある。
 - **確度**: 高
+- **状態: 対応済み（コミット `a21931c`）**。1 つの zone を更新する `set_zone_peer`（add / remove）と、zone 一覧を返す `list_msl_zones` を追加し、`update_zone_peers` / `remove_zone_peers` はそれを呼ぶだけにした。zone が見つからないときの WARN は全 zone で出すようにした（これまでは vpndmz のみ）。状態を持つ偽の pvesh で新旧を 9 ケース比較し、`pvesh set` の呼び出しと結果の peers が一致することを確認した。pve13 で add-node ×2 の後にすべての zone の peers が 3 ノードになり、`--restore` の del-node で 1 ノードずつ除かれることを確認した（2026-09-25）。
 
 ### C-11. IP 変換・プライベート IP 判定の関数が複数ある
 - **場所**: `ipv4_to_int` / `int_to_ipv4`（[lib/common.sh:351-372](../lib/common.sh#L351-L372)）、`ip_to_int` / `int_to_ip`（[lib/network.sh:50-71](../lib/network.sh#L50-L71)）、`ipv4_to_int`（[mslcm:162-167](../mslcm#L162-L167)）。`validate_private_ip`（[lib/common.sh:214-232](../lib/common.sh#L214-L232)）と `is_private_ip`（[lib/common.sh:671-680](../lib/common.sh#L671-L680)）
 - **重複と判断した根拠**: 同じ機能の関数が別名で存在する。
 - **消した場合のリスク**: `mslcm` は lib を source しない単独動作の設計（`/usr/local/bin` に配置されるため）なので、mslcm 内のコピーは意図的なもの。統合するのは lib 内の重複にとどめるのが無難。
 - **確度**: 高
+- **状態: 対応済み（コミット `16904b4`）**。`lib/network.sh` の `ip_to_int` / `int_to_ip` を削除し、common.sh の `ipv4_to_int` / `int_to_ipv4` に一本化した（`tests/test_network.sh` も更新）。`is_private_ip` を削除し、0102 の DNS ルールの判定は `validate_private_ip` を使う（F-16 を参照）。mslcm のコピーは単独動作のため残した。新旧で IP 変換・`cidr_overlaps`・`cidr_contains`・`calculate_subnet`・`split_pool` の出力が一致することを確認し、pve20 で 00 の保存（`.env` は生成日時以外同一）と 01 の DNS ルール作成を確認した（2026-09-25）。
 
 ### C-12. サブネット分割計算が 3 実装（1 つは結果が必ず上書きされる）
 - **場所**:
@@ -285,40 +305,47 @@
 - **重複と判断した根拠**: `compute_config` を呼んでいるのは `_recalculate_config` だけで（[:1062](../00_configNetwork.sh#L1062)）、その直後に `_apply_port_ranges`（[:1072](../00_configNetwork.sh#L1072)）が 3 の関数で PJ・プールの値を上書きする（[:1241-1258](../00_configNetwork.sh#L1241-L1258)）。そのため 2 の計算結果は最終的に使われない。なお 2 の GW 計算は if/else の両方が `broadcast_address` になっており（[:441-444](../00_configNetwork.sh#L441-L444)）、コメント（「最終の使用可能アドレス」）とも README（GW は .254）とも食い違っているが、上書きされるので実害は無い。
 - **消した場合のリスク**: 2 を消しても出力は変わらない見込み。ただし、2 はプレフィックスが 30 を超える場合に例外を出す（握りつぶされる）が 3 は出さないなど、エッジケースの挙動が少し違う。
 - **確度**: 高
+- **状態: 一部対応済み（コミット `f957cee`）**。2 の Python 版（`_calculate_subnet_py` / `_split_pool_py`）を削除した（中身が同じ if/else の GW 計算も消えた）。1 の bash 版は、00 の base config（`input_functions.sh`）が使っているので残した。scratchpad で新旧の 00 をモジュールとして読み込み、`compute_config` → `_apply_port_ranges` の最終 config が NUM_PJ = 2 / 4 / 8 / 16 で同一であることを確認した。pve20 で、AUTO（読み込みを断って保存）は変更前と変更後の 00 が生成した `.env` 同士、CUSTOM（既存の `.env` を読み込んで保存）は元の `.env` と比べて、どちらも生成日時の行以外は同一だった（2026-09-25）。
 
 ### C-13. 既設ネットワーク探索が bash と Python の 2 実装
 - **場所**: bash の `detect_existing_networks`（[lib/network.sh:326-469](../lib/network.sh#L326-L469)）、Python の `_collect_existing_networks_fallback`（[00_configNetwork.sh:621-725](../00_configNetwork.sh#L621-L725)）。両方の結果を `get_existing_networks`（[:562-619](../00_configNetwork.sh#L562-L619)）でマージしている。さらに `_run_base_config` でも bash 版を実行している（[:492](../00_configNetwork.sh#L492)）
 - **重複と判断した根拠**: 名前は「fallback」だが、コメントのとおり Python 版が主系で、bash 版は補助になっている。両者の検出範囲は一部しか重ならない（ARP と VM/CT の設定は bash 版だけ、`ip -o route` / `addr scope global` は両方）。
 - **消した場合のリスク**: どちらかを消すと検出範囲が変わる（設計原則 2.7 の検出対象を満たさなくなる可能性がある）。統合するなら、機能の和集合を 1 つの実装にまとめる必要がある。
 - **確度**: 中
+- **状態: 一部対応済み（コミット `f957cee`）**。bash 版と Python 版は検出元が違う（ARP と VM / CT 設定は bash 版だけ）ので統合はしていない。base config の bash が `detect_existing_networks` をもう一度実行していたので、`get_existing_networks` の結果（bash + Python）を渡して使うようにした（bash 版の探索は 2 回 → 1 回。偽の pvesh で `/cluster/resources` の呼び出し回数が 2 → 1 になることを確認した）。base config の既定値の候補も Python 版の検出結果を避けるようになる。`_collect_existing_networks_fallback` は主系なので `_collect_existing_networks_py` に改名した。pve20 で、AUTO（読み込みを断って保存）は変更前と変更後の 00 が生成した `.env` 同士、CUSTOM（既存の `.env` を読み込んで保存）は元の `.env` と比べて、どちらも生成日時の行以外は同一だった（2026-09-25）。
 
 ### C-14. SVG 生成が bash と Python の 2 実装
 - **場所**: [lib/svg_generator.sh](../lib/svg_generator.sh)（bash）、[00_configNetwork.sh:874-986](../00_configNetwork.sh#L874-L986)（Python の `generate_svg`）
 - **重複と判断した根拠**: bash 版を source しているのは旧 `0101_checkConfigNetwork.sh` だけ（[0101:75](../0101_checkConfigNetwork.sh#L75)）で、0101 は現行フローから呼ばれない（D-7）。
 - **消した場合のリスク**: 0101 を残すなら bash 版も必要。
 - **確度**: 高
+- **状態: 対応済み（コミット `068b661`）**。D-7 と一緒に `lib/svg_generator.sh` を削除した。00 の SVG 生成（Python 版）は影響を受けない。
 
 ### C-15. TUI の保存処理が 3 コピー
 - **場所**: [00_configNetwork.sh:2457-2499](../00_configNetwork.sh#L2457-L2499)、[:2501-2547](../00_configNetwork.sh#L2501-L2547)、[:2564-2592](../00_configNetwork.sh#L2564-L2592)
 - **重複と判断した根拠**: `.env` の生成、結果ダイアログ、SVG ダイアログ、`generate_svg` という流れが 3 回コピーされている。1 つ目は `if self.mode == "CUSTOM":` ブロックの中にある `mode == "AUTO"` の分岐なので、到達しない（D-8）。
 - **消した場合のリスク**: 1 つ目は到達不能なので無し。2 つ目と 3 つ目は検証内容が少し違う（CUSTOM ではカスタムフィールドを検証する）。
 - **確度**: 高
+- **状態: 対応済み（コミット `f957cee`）**。到達しない 1 つ目を削除し（D-8）、残りの 2 つを `_save_env(custom)` にまとめた。CUSTOM だけがカスタム項目の検証と確認ダイアログを行う違いはそのまま。`_handle_key` の SAVE を 128 通り（AUTO / CUSTOM × 各検証の成否 × 確認 × 生成の成否 × SVG）で新旧比較し、呼び出し順・戻り値・ステータスが同一であることを確認した。pve20 で、AUTO（読み込みを断って保存）は変更前と変更後の 00 が生成した `.env` 同士、CUSTOM（既存の `.env` を読み込んで保存）は元の `.env` と比べて、どちらも生成日時の行以外は同一だった（2026-09-25）。
 
 ### C-16. probe / UUID 処理が 01 と 02 で同一コピー
 - **場所**: [01_networkSetup.sh:40-100](../01_networkSetup.sh#L40-L100) と [02_vpnSetup.sh:41-101](../02_vpnSetup.sh#L41-L101)（`load_phase_uuid_or_exit` / `post_phase_probe_token`）。00 には Python 版がある
 - **重複と判断した根拠**: 2 つの関数は完全に同じ内容。さらに `post_phase_probe_token` の jp/en の分岐は、両方が同じ英語メッセージを出している（[01:92-96](../01_networkSetup.sh#L92-L96)）。
 - **消した場合のリスク**: lib に移す場合、外部送信の内容が変わらないことを確認する必要がある（`GITHUB_WIKI_DATA_SENT_*.md` との整合）。
 - **確度**: 高
+- **状態: 対応済み（コミット `16904b4`）**。`lib/probe.sh` を新設し、01 / 02 から source する。jp / en で同じだった分岐も統合した。偽の curl で送信内容（URL・ヘッダ・本文）とコンソール / ログ出力が新旧で一致することを確認し、pve20 で `01_start` / `02_start` / `02_done` の送信が成功することを確認した（2026-09-25）。送信内容は変わらないので `GITHUB_WIKI_DATA_SENT_*.md` の更新は不要。
 
 ### C-17. SDN 状態のダンプ処理の重複
 - **場所**: [lib/sdn_backup_restore.sh:37-109](../lib/sdn_backup_restore.sh#L37-L109)（`_dump_sdn_state`）、[:191-242](../lib/sdn_backup_restore.sh#L191-L242)（`_backup_and_log_sdn_state`）、[0102_setupNetwork.sh:477-535](../0102_setupNetwork.sh#L477-L535)（FINAL STATE DUMP）
 - **重複と判断した根拠**: 0102 の最終ダンプは `_dump_sdn_state live` とほぼ同じ内容。しかも v2.0 で廃止した Security Group のダンプ（[0102:516-529](../0102_setupNetwork.sh#L516-L529)）が残っている。
 - **消した場合のリスク**: ログの出力内容が少し変わるだけ。
 - **確度**: 高
+- **状態: 対応済み（コミット `16904b4`）**。0102 の最終ダンプを `_dump_sdn_state live "Final"` に置き換えた。Security Group のダンプが無くなり、DC の FW オプション / FW ルール / VPN_POOL の経路が出力されるようになった。pve20 のログで確認した（2026-09-25）。F-15 も参照。`_backup_and_log_sdn_state` はバックアップファイルの作成を兼ねるので残した。
 
 ### C-18. if/else の中身が同一
 - **場所**: [0201_createPritunlVM.sh:268-272](../0201_createPritunlVM.sh#L268-L272)（どちらの分岐も `msg_printf PREV_VM_AUTOREMOVE`）、[00_configNetwork.sh:441-444](../00_configNetwork.sh#L441-L444)（C-12）、[01_networkSetup.sh:92-96](../01_networkSetup.sh#L92-L96)（C-16）
 - **確度**: 高
+- **状態: 対応済み（コミット `16904b4`）**。0201 の分岐を 1 行にした（実機では前 VM の自動削除の経路は通っていないが、同一内容の統合のためコードの確認で OK とした）。01 / 02 の probe の分岐は C-16 で統合。00 の分岐は C-12（00 の整理）で扱う。
 
 ---
 
@@ -332,11 +359,19 @@
 | D-4 | [0102_setupNetwork.sh:112-120](../0102_setupNetwork.sh#L112-L120)、[:130-135](../0102_setupNetwork.sh#L130-L135) | `update_env_var` は未使用。`get_rule_pos_by_comment` の引数 `node_name` も使われていない | 高 |
 | D-5 | [0103_clusterSetup.sh:308-321](../0103_clusterSetup.sh#L308-L321)、[:519](../0103_clusterSetup.sh#L519) | `append_cluster_env_record` は未使用（mslcm 側に同じ役割の関数がある）。`local master_ip` も未使用 | 高 |
 | D-6 | [01_networkSetup.sh:257-288](../01_networkSetup.sh#L257-L288)、[:332-335](../01_networkSetup.sh#L332-L335) | `--restore` の処理は 223 行目で `exit 0` するので、それより後にある `RESTORE_ONLY == true` の分岐には到達しない | 高 |
-| D-7 | [0101_checkConfigNetwork.sh](../0101_checkConfigNetwork.sh) | 呼び出し元は 00 の `_exec_custom`（[00:2919-2928](../00_configNetwork.sh#L2919-L2928)）だけで、`_exec_custom` 自体がどこからも呼ばれていない。さらに [0101:77](../0101_checkConfigNetwork.sh#L77) に全角の「２」が 1 文字だけの行があり、実行すると `set -e` の下で `command not found` になって即終了するはず。それでもリリースには同梱されている（[make_release_mslpro.sh:43](../make_release_mslpro.sh#L43)、[make_release_mslpro_corporate.sh:39](../make_release_mslpro_corporate.sh#L39)）。`0301:127` のエラーメッセージも 0101 を案内している | 高 |
+| D-7 | [0101_checkConfigNetwork.sh](../0101_checkConfigNetwork.sh) | 呼び出し元は 00 の `_exec_custom`（[00:2919-2928](../00_configNetwork.sh#L2919-L2928)）だけで、`_exec_custom` 自体がどこからも呼ばれていない。さらに [0101:77](../0101_checkConfigNetwork.sh#L77) に全角の「２」が 1 文字だけの行があり、実行すると `set -e` の下で `command not found` になって即終了するはず。それでもリリースには同梱されている（[make_release_mslpro.sh:43](../make_release_mslpro.sh#L43)、[make_release_mslpro_corporate.sh:39](../make_release_mslpro_corporate.sh#L39)）。`0301:127` のエラーメッセージも 0101 を案内している。**状態: 対応済み（コミット `068b661`）**。0101 と `lib/svg_generator.sh`（C-14）、未使用の `_exec_custom` と `MSG_USAGE_SVG_GENERATOR` を削除し、リリーススクリプトの同梱リスト、0301 のメッセージ、00 / 01 のヘッダを更新した。pve20 で 2 ファイルを退避した状態で、00 の CUSTOM モードの保存（`.env` は生成日時以外同一、SVG も更新）と `01_networkSetup.sh` の完走を確認した（2026-09-25） | 高 |
 | D-8 | [00_configNetwork.sh:2457-2499](../00_configNetwork.sh#L2457-L2499) | CUSTOM ブロックの中にある `mode == "AUTO"` の分岐は到達不能（その中の `if self.mode == "CUSTOM"` も同様） | 高 |
 | D-9 | [mslcm:1483-1486](../mslcm#L1483-L1486) | `enable-vpn-ha` は v2.0-c 用のプレースホルダ（使い方の表示にも出る）。ロードマップ上の意図があるなら残す | 高 |
 | D-10 | [lib/pritunl_install.sh:104-106](../lib/pritunl_install.sh#L104-L106)、[:840-846](../lib/pritunl_install.sh#L840-L846)、[99_uninstall.sh:225-242](../99_uninstall.sh#L225-L242) | コメントアウトされた旧コード（yum の版固定、戻り経路の検証、クォータの restore） | 高 |
 | D-11 | [scripts/pritunl_build_helper.py:915](../scripts/pritunl_build_helper.py#L915)、[:933](../scripts/pritunl_build_helper.py#L933) | `create_server` の引数 `dns_ip1` は使われておらず、`dns_servers` は `1.1.1.1` 固定。v1.4.6 の修正（DNS_IP1 にプライベート IP を指定すると VPN 接続中にインターネットに出られない問題）による意図的なものかもしれない（**推測**） | 高（意図は推測） |
+
+**D の状態（2026-09-25）**:
+- **D-1〜D-6: 対応済み（コミット `13b2dc2`）**。未使用の関数（`msl_handle_backup_restore`, `persist_vpn_pool_route`, `restore_file`, `update_env_var`, `append_cluster_env_record`）と、それらだけが使うメッセージ（`MSG_SDN_RESTORE_ONLY_NO_BACKUP`, 0103 の `CLUSTER_ENV_ALREADY_HAS` / `APPENDED_CLUSTER_ENV`）、0103 の未使用の `local master_ip`、01 の `exit 0` より後にある `RESTORE_ONLY` の分岐を削除した。`remove_vpn_pool_route_hooks` は B-8 のため残した。01 は scratchpad で 0102 / 0103 / curl を偽物にして、通常・`--restore`（en / jp）の呼び出しと表示を確認した。pve20 で `01 --restore`、`01 jp --restore`、`01`（通常）がすべてこれまでどおり完了することを確認した。
+- **D-7: 対応済み**（表を参照）。
+- **D-8: 対応済み（コミット `f957cee`）**。C-15 と一緒に到達しない分岐を削除した。
+- **D-9: 対応しない（残す）**。v2.0-c 用のプレースホルダ（ユーザー判断）。
+- **D-10: 一部対応済み（コミット `13b2dc2`）**。コメントアウトされた戻り経路の検証（`pritunl_install.sh`）を削除した。`pritunl-openvpn` の版固定の yum 行（問題が起きたときの控え）と、99 のクォータの restore（0302 が延期中）は残す（ユーザー判断）。
+- **D-11: 検討中（現状維持）**。`dns_servers` は VPN クライアントに配布する DNS で、1.1.1.1 固定は暫定対処。本来は 00 で新しい設定項目として定義させるべきか検討中（ユーザー、2026-09-25）。
 
 ---
 
@@ -371,20 +406,25 @@
 ### E-6. 「元の状態に戻せる」という記述と、アンインストール後に残るもの
 - **文書**（[GITHUB_WIKI_IMPACT_EN.md](../GITHUB_WIKI_IMPACT_EN.md)）: 「`99_uninstall.sh` removes the configuration added by MSL Setup and is intended to return to the pre-run state.」。実行フローの説明は v1.x のまま（0103 / mslcm / keepalived / msldhcp / if-up フックの記載が無い）。
 - **実装**: 静的に読んだ限り、アンインストール後に次のものが残る。`/usr/local/bin/msldhcp`、msldhcp が作った DHCP CT・ホストの systemd unit・`/usr/local/sbin/msl-dhcp-export-all`・`/var/lib/mslsetup/`、`/usr/share/pve-manager/images/msl-setup-network-diagram.svg` とノード notes の図のブロック、`/var/lib/vz/snippets/pritunl-vm-*-userdata.yml`、クラウドイメージのキャッシュ。
-- **状態: 後回し（リファクタリングで対応、ユーザー判断 2026-09-24）**
+- **状態: 対応済み（コード: コミット `61a43ce`、Wiki の元原稿: コミット `c26667c`）**。リポジトリ内の Wiki の元原稿は、公開中の Wiki と一致していない（ユーザー、2026-09-25）。公開 Wiki への反映方法は、ユーザーが後で決める。
+  - 0201: VM の削除時に user-data の snippet も削除する（VM 起動のたびに cloud-init の ISO を再生成するので、VM がある間は必要）。
+  - `0102 --restore`: `/usr/local/bin/msldhcp` と、msldhcp がホストに作るもの（`msl-dhcp-export-all.{path,service}`、exporter、`/var/lib/mslsetup/dhcp`）を削除する（実行したノードのみ。DHCP の CT は利用者が削除する）。
+  - 99: Step 5 として、SVG とノードの notes の図のブロックを削除する（00 と同じ目印でブロックだけを取り除く）。
+  - 残すもの（Wiki に記載する）: クラウドイメージのキャッシュ、00 が入れたパッケージ、root の SSH 鍵、インストールディレクトリの `logs/`・`.env`・`.uuid`・`docs/generated/`。
+  - pve20 で、02 → msldhcp で CT を作成 → CT を削除 → 99 の後に、snippet、msldhcp の 3 ファイル、`sdn_backup/`、SVG、notes の図がいずれも残っていないことを確認した（2026-09-25）。
 
 ### E-7. スクリプトのヘッダ・メッセージに残る古いファイル名と説明
-- [01_networkSetup.sh:12-17](../01_networkSetup.sh#L12-L17): 「0101_checkConfigNetwork.sh を実行する」とあるが、実際に実行するのは 0103 --restore → 0102 → 0103。
+- [01_networkSetup.sh:12-17](../01_networkSetup.sh#L12-L17): 「0101_checkConfigNetwork.sh を実行する」とあるが、実際に実行するのは 0103 --restore → 0102 → 0103。（D-7 の対応で修正済み、コミット `068b661`）
 - ヘッダの Filename が古い名前: 0101（`00_check_env.sh`）、0102（`01_setup_sdn.sh`）、00（`0101_configNetwork.sh`。使い方の表示も同じ、[00:3119](../00_configNetwork.sh#L3119)）、0201（`02_deploy_pritunl.sh`）、0202（`03_pritunl_setup.sh`）。
 - [0202_configurePritunl.sh:26-30](../0202_configurePritunl.sh#L26-L30) の Notes: 「Pritunl free version does not support API token authentication」「Organization/Server creation requires GUI」→ 現在は自動化されている。
 - エラーメッセージが古いファイル名を案内している: [0201:330](../0201_createPritunlVM.sh#L330)（`01_setup_sdn.sh`）、[0202:59](../0202_configurePritunl.sh#L59)・[:92](../0202_configurePritunl.sh#L92)、[lib/env_generator.sh:58](../lib/env_generator.sh#L58)（生成される `.env` に「Re-run 00_check_env.sh」と書かれる）。
 - [lib/pritunl_install.sh:59-68](../lib/pritunl_install.sh#L59-L68): コメントとリポジトリ名は「MongoDB 8.0」だが、baseurl は `8.2`。
-- **状態: 後回し（古い記述の修正、ユーザー判断 2026-09-24）**
+- **状態: 対応済み（コミット `0f920fc`）**。利用者に表示されるメッセージ（`.env` が無いときの案内 en / jp、0201 / 0202 のエラー、00 の使い方、生成される `.env` のコメント）、00 / 0102 / 0201 / 0202 のヘッダ（Filename・Usage・0202 の Notes・0102 の「差分のみ適用」）、ログの文脈名、lib のコメントを現行に合わせた。0102 / `lib/common.sh` / 00 の日本語コメント 35 行を英語にした。`lib/pritunl_install.sh` の MongoDB 8.0 / 8.2 の食い違いは Pritunl VM 系の作り直しで扱う。pve20 で、00 が生成した `.env` のコメント、`01 --restore` と `01` の完了、`.env` が無いときの 0102 の jp メッセージ、`msldhcp --help` を確認した（2026-09-25）。
 
 ### E-8. 0102 のコメント「vpndmzvn インターフェースが存在する場合のみ設定」
 - **場所**: [0102_setupNetwork.sh:466-470](../0102_setupNetwork.sh#L466-L470)
 - **実装**: 存在は確認していない（フックを生成するだけ）。「VLAN IF の存在監視は持たない」という方針（CLAUDE.md 第 3 章 #3）とは実装の方が合っているので、古いのはコメントの方だと思われる。
-- **状態: 後回し（古い記述の修正、ユーザー判断 2026-09-24）**
+- **状態: 対応済み（コミット `0f920fc`）**。コメントを「GW の IP と戻り経路は if-up.d / if-down.d のフックが付ける。IF の存在は確認・監視しない（方針どおり）」に直した。
 
 ### E-9. `.github/copilot-instructions.md` と現行実装
 - Pritunl VM の OS: 文書は Ubuntu 24.04 + ufw 無効化、実装は AlmaLinux 9 + SELinux（[0201:111-114](../0201_createPritunlVM.sh#L111-L114)）。
@@ -392,7 +432,7 @@
 - 「ドキュメントやユーザー向けメッセージは日本語で記述する」→ 実装の既定は英語（`en`）。
 - `PJALL_CIDR` の既定値: 文書は `172.16.16.0/20`、実装は `172.16.16.0/21`（[00_configNetwork.sh:87](../00_configNetwork.sh#L87)）。
 - `set -euo pipefail` を使う規約 → `0301` は `set -uo pipefail`。
-- **状態: 後回し（古い記述の修正、ユーザー判断 2026-09-24）**
+- **状態: 対応済み（削除、ユーザー判断 2026-09-25、コミット `43f0543`）**。規約は CLAUDE.md に引き継いだ。あわせて、検査対象が既に無いファイル（`00_check_env.sh`, `01_setup_sdn.sh`）で実質何も検査していなかった `tests/test_multilang.sh` と生成レポートも削除した（ユーザー判断）。同テストにあった en / jp の MSG キー一致の確認は手で行い、en だけにあった未使用の usage メッセージ 3 件を削除して一致させた（コミット `a79dd30`）。
 
 ### E-10. `.editorconfig` とコード
 - `.editorconfig` は `*.sh` を 2 スペースインデントと定義しているが、実際のコードはほぼ 4 スペース。
@@ -443,6 +483,7 @@
 - **確度**: 中
 - **状態: 修正済み（ブランチ `fix/rule-cleanup-by-pattern`）**。pve20（非クラスタ）で確認した（2026-09-24）。NUM_PJ=4 でセットアップしたあと、00 で NUM_PJ=2 に変更（VPNDMZ/VPN_POOL/PJALL も変更）してから `01 --restore` を実行し、MSLSetup のルールがすべて削除された。その後の再セットアップでは PJ01/02 のルールだけが作成された。0301 は pve13 で確認した。NUM_PJ=4 で作成したあと、`.env` を NUM_PJ=2 に書き換えて `--restore` し、Selfcare のルールが 4 件とも削除された。0102 の FW ルールの処理はクラスタかどうかで変わらないため、クラスタでの再テストは不要と判断した（ユーザー判断）。
 - **補足**: 0301 の restore の Step 2（ACL の削除、[0301:297-331](../0301_setupSelfCarePortal.sh#L297-L331)）は、まだ `NUM_PJ` でループしている。ただし、Proxmox はグループやプールを削除するとその ACL も自動で削除する（`PVE::AccessControl::delete_group_acl` / `delete_pool_acl`）。0301 はグループとプールをバックアップとの差分で削除するので、実害は無い。一貫性のためにパターン一致へ揃えるのは、低優先の整理候補。いったん保留（運用での回避）としたあと、方針を変えて修正した。DC FW ルールの削除を、`.env` の値から組み立てた完全一致ではなく、コメントのパターン一致に変更した（0102: `MSL_0102_RULE_COMMENT_REGEX` など、0301: `^MSLSetup Selfcare PJ[0-9]{2} GUI Access$`）。mslcm の VXLAN / VRRP ルールはパターンに含めない。「`MSLSetup` で始まるコメントは変更・流用しない」という運用ルールを README と README_jp の Known Issues に記載した。restore の中で `.env` に依存する処理として残っているのは VPN pool route の削除だけだが、経路は vpndmzvn と一緒に消えるので実害は無い。
+  - **状態: 対応済み（コミット `bd8a1ed`）**。現在の ACL からパスが `^/(pool/pj|sdn/zones/devpj)[0-9]{2}$` に一致し、バックアップに無いものを削除するようにした。偽の ACL で新旧を比べ、NUM_PJ が作成時と同じなら削除対象は同一、NUM_PJ を減らした場合は新しい方だけが残りのエントリも削除することを確認した。pve13 で 0301 → `0301 --restore` の後、該当する ACL が 0 件になることを確認した（2026-09-25）。
 
 ### F-5. `set -e` の下で、エラーをログに残す処理が動かない
 - **場所**: [lib/sdn_backup_restore.sh:157-185](../lib/sdn_backup_restore.sh#L157-L185)（`_pvesh_delete_logged` / `_route_del_logged`）、[0102_setupNetwork.sh:369-379](../0102_setupNetwork.sh#L369-L379)、[:397-399](../0102_setupNetwork.sh#L397-L399)、[:404-410](../0102_setupNetwork.sh#L404-L410)、[:284](../0102_setupNetwork.sh#L284)
@@ -459,16 +500,20 @@
 
 ### F-7. `set_vnet_subnet_dhcp_range` のフォールバック ID
 - B-9 を参照。フォールバックが使われた場合、`pvesh set` が失敗して [0102:275](../0102_setupNetwork.sh#L275) で止まる（`set -e` の下、`||` なし）。
+- **状態: 対応済み（コミット `54e4a4c`）**。B-9 を参照。
 
 ### F-8. `die "... (exit code: $?)"` が常に 0 を表示する
 - **場所**: [lib/pritunl_install.sh:73](../lib/pritunl_install.sh#L73)、[:94](../lib/pritunl_install.sh#L94)、[:178](../lib/pritunl_install.sh#L178)、[:496](../lib/pritunl_install.sh#L496)
 - **推論**: `if ! cmd; then` の中の `$?` は否定した後の値なので 0 になる。表示だけの問題。
 - **確度**: 高
+- **追記（2026-09-25）**: 178・496 行目付近はもっと重い問題がある。失敗時の診断出力 `ssh ... "systemctl status ..." | tee -a "$LOG_FILE"` は、サービスが失敗していると `systemctl status` が 3 を返すので、`set -euo pipefail` の下でその行で終了する。`journalctl` の出力と `die` のメッセージが出ないまま 0202 が終わる（`log_error` の行はログに残り、02 は「Pritunl 設定が失敗しました」と表示する）。
+- **状態: 後回し（リファクタリングで対応、ユーザー判断 2026-09-25）**。`pritunl_install.sh` は 1 コマンドずつ ssh の stdin に送る作りになっている（インストール中の状況をホストのコンソールにも表示するため）。これを、VM 上で実行するインストール用スクリプト 1 本（`set -euo pipefail` と ERR trap で診断出力を出し、終了コードを返す）に作り直すときに、まとめて解消する。C-4・C-5・C-8 など Pritunl VM 系の重複の整理も同じ作業で扱う。
 
 ### F-9. 0102 は `.env` と `sdn_backup` を相対パスで参照している
 - **場所**: [0102_setupNetwork.sh:97](../0102_setupNetwork.sh#L97)、[:186](../0102_setupNetwork.sh#L186)
 - **推論**: 0102 自身は `cd` しない。01 と 99 は `cd` してから呼ぶので問題ないが、別のディレクトリから 0102 を直接実行すると、別の場所の `.env` や `sdn_backup` を見に行く。
 - **確度**: 高（影響は直接実行した場合だけ）
+- **状態: 対応済み（コミット `54e4a4c`）**。0102 の `SCRIPT_ROOT` の直後で `cd` するようにした（他のスクリプトと同じ形）。pve20 で、`/` から `~/msl-setup/0102_setupNetwork.sh --restore` を実行して restore が完了し、`/sdn_backup` が作られないことを確認した（2026-09-25）。
 
 ### F-10. クラスタ化済みの MASTER ノードでは `00_configNetwork.sh` を実行できない（2026-09-24、実機で判明）
 - **場所**: [00_configNetwork.sh:2955-2982](../00_configNetwork.sh#L2955-L2982)（`_check_vmbr0_single_ipv4`）
@@ -481,7 +526,7 @@
 - **場所**: [lib/sdn_backup_restore.sh](../lib/sdn_backup_restore.sh) の「Deleting IPSets not in backup」
 - **推論**: restore は、バックアップに無い IPSet をすべて削除する。mslcm が作る `vxlan_peers` もバックアップに無いので削除対象になり、それを参照する VXLAN / VRRP ルール（mslcm の所有）だけが残る。`01_networkSetup.sh` と `99_uninstall.sh` は `0103 --restore`（disable-cluster）を先に実行するので、通常の手順では起きない。0102 を直接実行した場合だけの問題。
 - **確度**: 中（静的な読解による。F-4 の修正とは関係ない既存の挙動）
-- **状態: 未対応（低優先）**
+- **状態: 対応済み（コミット `4e955d6`）**。`vxlan_peers` だけでなく、クラスタモードのまま 0102 を単独で実行すると zone の削除で mslcm の peers 情報が失われ、keepalived のフックと VXLAN / VRRP ルールが残るので、`/etc/pve/mslsetup/cluster.env` がある場合は `01_networkSetup.sh` を使うよう案内して終了するようにした（`--restore` の有無によらない）。01 / 99 は先に `0103 --restore` で `/etc/pve/mslsetup` を削除してから 0102 を呼ぶので影響しない。pve13 でクラスタを有効にした状態で、`0102 --restore` が en / jp のメッセージで exit 1 になり `vxlan_peers` が残ること、その後の `01 --restore` が通ることを確認した（2026-09-25）。
 
 ### F-12. keepalived の削除で `apt-get autoremove -y --purge` を実行している（2026-09-24 追記）
 - **場所**: [mslcm:763-771](../mslcm#L763-L771)（`remove_packages_local`）、[mslcm](../mslcm) の `cmd_del_node` の中にあるリモートでの purge
@@ -491,6 +536,10 @@
 - **状態: 対応済み（コミット `49d8281`）**。pve13/14/15 で確認した（2026-09-24）。restore の前後でインストール済みパッケージ数が一致した（1304）。コマンドが無い場合だけインストールし、各ノードのローカルの `/var/lib/mslsetup/msl-installed-packages` に記録する。削除するときは、記録にあるパッケージだけを purge し、autoremove は行わない。ローカル（enable-cluster / disable-cluster）とリモート（add-node / del-node）で同じスクリプトを使う。偽の apt-get を使って 5 ケースを確認した。
 - **移行時の注意**: 修正前のバージョンで keepalived を入れたノードには記録ファイルが無いので、restore しても keepalived はアンインストールされない（停止・無効化と設定ファイルの削除は従来どおり行われる）。
 - **残っている課題**: MSL より前から keepalived を使っていた環境では、enable-cluster / add-node が `keepalived.conf` を上書きし、restore でサービスを停止して設定を削除する。パッケージが削除されることはなくなったが、設定の上書きは残っている。
+  - **状態: 後回し（Pending、ユーザー判断 2026-09-25）**。v2.1.2 のリリースノートに注意事項として記載済み。検討した案と判断:
+    - 案 1（既存の設定を上書きしてよいかをユーザーに確認し、NG なら「クラスタ環境では正常に動かない」と表示して止める）: NG を選ぶと MSL Setup をクラスタで使えなくなるので採らない。keepalived が使えないと、テナントをクラスタで使うという機能そのものが成り立たない。
+    - 案 2（既存の `keepalived.conf` を壊さずに MSL の設定を追加する）: include 方式の実装、VRID の扱い、restore の分岐が必要になる。さらに、既存の keepalived がある場合と無い場合の両方でフェイルオーバーを試験する必要があり、検証の組み合わせが増える。
+    - 対象になる利用者はほとんどいないと判断した。PVE クラスタの HA は通常 pve-ha-manager が担い、keepalived を使う場合も VM や LXC の中で動かすことが多い。ホストの vmbr0 に自前の VRRP を載せるのはネットワークに詳しい層で、リリースノートの注意事項を読めば自分で判断できる。効果に対してコストが大きいので、保守性に効くリファクタリングを優先する。
 
 ### F-13. DC / ホストの FW の有効化に失敗しても続行する（2026-09-24 追記、B-11 と同じ系統）
 - **場所**: [0102_setupNetwork.sh](../0102_setupNetwork.sh) の `Setting datacenter firewall options`（失敗しても `echo "[ERROR]"` のみ）と `Host firewall/nftables`（失敗しても `[WARN]` のみ）
@@ -503,6 +552,55 @@
 - **状態: 対応済み（コミット `c47268c`）**。pve13 で、01 を実行していない状態では何も作らずに exit 1 で停止し、01 を実行した後は正常に完了することを確認した（2026-09-24）。セットアップ時（`--restore` 以外）は最初に IPSet `vpn_guest_pool` の存在を確認し、無ければ「Run ./01_networkSetup.sh first.」で停止する。
 - **関連（対応しない）**: `exec_cmd_with_log` は失敗の詳細を stdout に出していて、呼び出し側が `> /dev/null` しているため、コンソールには `Command execution failed` しか出ない。詳細はログファイルに残っていて原因を調べられるので、今回は修正しない（ユーザー判断）。エラー処理の方法は、後でまとめて統一する可能性がある。
 
+### F-15. 0102 の最終状態ダンプで pvesh が失敗すると、セットアップ完了後に 0102 が途中終了する（2026-09-25 追記）
+- **場所**: 0102 の「FINAL STATE DUMP」（C-17 で置き換え前）
+- **内容**: 最終ダンプの `pvesh get ... | while read ...` には `|| true` が無く、`set -euo pipefail` の下で pvesh が失敗すると 0102 がその場で終了していた。SDN と FW の作成は完了しているが、msldhcp の配置とルータ設定の案内が行われず、01 は「SDN セットアップが失敗しました」と表示する。偽の pvesh（常に失敗）で、旧コードが exit 255 で止まることを再現した。
+- **状態: 対応済み（コミット `16904b4`）**。C-17 で `_dump_sdn_state`（各行に `|| true` がある）に置き換えたことで解消した。
+
+### F-16. `is_private_ip` が 172.10〜172.15 をプライベート IP と判定していた（2026-09-25 追記）
+- **場所**: `lib/common.sh` の `is_private_ip`（C-11 で削除）。使っていたのは 0102 の DNS ルールの判定だけ。
+- **内容**: 正規表現 `^172\.([1-2][0-9]|3[0-1])\.` が 172.10〜172.29 に一致していた。RFC1918 は 172.16〜172.31 なので、172.10〜172.15（公開アドレス）が誤ってプライベート扱いになる。DNS_IP にこの範囲のアドレスを指定すると、不要な DNS 許可ルールが作られていた（DROP ルールはプライベート宛てだけなので、実害は小さい）。
+- **状態: 対応済み（コミット `16904b4`）**。C-11 で `validate_private_ip`（第 2 オクテットを 16〜31 で判定）に置き換えた。11 個の IP で新旧を比較し、違いは 172.15.0.1 だけであることを確認した。
+
+### F-17. restore は、MSL の導入後に利用者が作った SDN オブジェクトも削除する（2026-09-25 追記）
+- **場所**: [lib/sdn_backup_restore.sh](../lib/sdn_backup_restore.sh) の `msl_restore_to_backup`（「Deleting zones / VNets / subnets / IPSets not in backup」、FW オプションの揃え直し）
+- **内容**: restore はバックアップ（MSL 導入前の状態）に無い zone / vnet / subnet / IPSet をすべて削除し、DC / ホストの FW オプションをバックアップ時の値に戻す。MSL の導入中に利用者が作った zone や IPSet も対象になり、01 の再実行・`01 --restore`・アンインストールで削除される。Wiki の Impact Report の「Existing VNet/IPSet/Zone names are preserved」「Backup/restore operates within the scope of MSL-managed resources」と食い違っていた。
+- **検討した案**: 削除対象を MSL の名前（`vpndmz`, `devpjNN`, `vpndmzvn`, `vnetpjNN`, MSL の IPSet）に限る案（B）は、他者が同名で作ったものも削除されるうえ、FW ルールはコメント以外に識別手段が無く、「MSL が追加したものだけを削除する」ことにはならない。
+- **状態: 対応しない（仕様として文書化、ユーザー判断 2026-09-25）**。README / README_jp の Known Issues に明記した（コミット `8a7d684`）。利用者が増えて具体的な issue が挙がったら、正式な対応方法を検討する。
+
+### F-18. restore / アンインストール後もバックアップが残り、次の導入で古いバックアップが使われる（2026-09-25 追記）
+- **内容**: `sdn_backup/`（と `.backup_complete`）、`rbac_backup/` はアンインストール後も残っていた（回帰テストで確認）。アンインストール後に利用者が SDN や FW オプションを変更してから再導入すると、01 は古いバックアップで restore するので、変更したものが削除される・元に戻される。
+- **状態: 対応済み（コミット `61a43ce`）**。`0102 --restore` の成功後に `sdn_backup/` を、`0301 --restore` の成功後に `rbac_backup/` を削除する（ユーザー判断）。`0102 --restore` ではバックアップが無くても新たに取らない（以前は取ってから「restore しない」分岐に入り、それが残っていた）。次の通常実行で現在の状態からバックアップを取り直す。pve20 でアンインストール後に `sdn_backup/` が無く、再導入時に restore を経ずに新しいバックアップが作られること、pve13 で `0301 --restore` 後に `rbac_backup/`、`01 --restore` 後に `sdn_backup/` が無いことを確認した（2026-09-25）。
+
+### F-19. クラスタの restore で、他のノードのホスト FW を無条件に無効にする（2026-09-25 追記）
+- **場所**: [mslcm](../mslcm) の `cmd_add_node`（`-enable 1 -nftables 1`）と `cmd_del_node`（`-enable 0 -nftables 0`）
+- **内容**: add-node は対象ノードのホスト FW を有効にするが、それ以前の状態を記録していない。del-node（`0103 --restore`、`01` の再実行、アンインストール）は無条件に無効にするので、MSL の導入前から pve14 / pve15 のホスト FW を有効にしていた環境では、restore 後に FW が無効になる。ローカルノード（MASTER）は 0102 の restore がバックアップの値に戻すので影響しない。F-12（keepalived）と同じ系統で、セキュリティに関わる。
+- **対応案**: add-node の前に対象ノードの `enable` / `nftables` の値を記録し（F-12 と同じく各ノードの `/var/lib/mslsetup/` など）、del-node でその値に戻す。
+- **状態: 対応済み（コミット `19fbb5e`、文書は `4717bce`）**。add-node はホスト FW を有効にする前に、そのノードの `enable` / `nftables` を `cluster.env` に `HOSTFW=<ip>,<enable>,<nftables>` として記録し（既にあれば上書きしない）、del-node は記録した値に戻して行を削除する。記録が無いノード（以前の版で add-node したもの）は従来どおり無効にして WARN を出す。偽の pvesh で記録・再実行時の保持・1/1 と 0/0 への復元・記録なしを確認した。pve13 で、pve14（導入前に有効）と pve15（無効）について `HOSTFW=192.168.77.61,1,1` / `HOSTFW=192.168.77.62,0,0` が記録され、`01 --restore` 後にそれぞれ有効・無効に戻ることを確認した（2026-09-25）。
+
+---
+
+## リリース v2.1.3（2026-09-25）
+
+ここまでの対応（v2.1.2 以降）を v2.1.3 としてリリースする（ユーザー判断）。残りの項目（Pritunl VM 系の作り直し: F-8, C-1〜C-8, B-7, D-11、G-4 のエラー処理の統一）は nice to have として次回以降に扱う。後回し: F-12（既存の keepalived）、公開 Wiki への反映と G-10。リリース前の通しの回帰テストは、個々の修正ごとに pve20 / pve13 で確認済みのため省略した（ユーザー判断）。
+
+---
+
+## 回帰テスト（2026-09-25、pve20、v2.1.2 → main `3ee5ce1`）
+
+pve20（単一ノード、公開版 v2.1.2 の clone）に、Personal 版の同梱ファイル一式を `main` から取り込み（`0101_checkConfigNetwork.sh` と `lib/svg_generator.sh` は削除）、MSL が入っていない状態から通しで実行した。すべて正常に完了した。
+
+| 順番 | 実行 | 結果 |
+|---|---|---|
+| 1 | `00_configNetwork.sh` | `.env` と SVG を生成 |
+| 2 | `01_networkSetup.sh`（初回。バックアップ作成、restore なし） | 完了。0103 は非クラスタとして後始末をスキップ |
+| 3 | `02_vpnSetup.sh en` | VM 作成（VMID 100）、UDP 到達性を含む検証すべて PASSED、0202 完了（Server / Org 4 組） |
+| 4 | `01_networkSetup.sh`（2 回目） | 0103 の restore（cluster mode 無効でスキップ）→ 0102 の restore → 再作成、完了 |
+| 5 | `99_uninstall.sh en` | 確認で N → 中止。y → Step 1 スキップ（Personal）、Step 2 で VM とスナップショットを削除、Step 3 / 4 完了 |
+| 6 | `pvesh get /cluster/sdn/zones` | MSL の zone は残っていない |
+
+アンインストール後、インストールディレクトリには `.uuid`, `backup/`, `sdn_backup/`, `logs/`, `docs/generated/`, `docs/pritunl_config_reference.md` が残る（E-6、G-9 を参照）。クラスタ（pve13）と Corporate 版（0301）は、個々の修正の確認時に実施済みで、通しの回帰テストは未実施。
+
 ---
 
 ## G. その他の気づき
@@ -513,7 +611,9 @@
 - **G-2. Pritunl VM の root パスワードが全インストールで共通の固定値**（C-1）。SSH は MainLAN 側 IP でだけ待ち受けており、VM notes で変更を促してはいる。**状態: 対応しない（ユーザー判断、2026-09-24）**。VM notes で初回ログイン時の変更を促すことで対処とする。パスワードを乱数で生成しても notes に記載する以上は同じ問題が残る、という判断。
 - **G-3. `.gitignore` の対象なのに git 管理されているもの**: `msl-setup-2.0.3/`、`msl-setup-2.1.0/` などのリリーススナップショット（`msl-setup-*/`）、`rbac_backup/*.json`（開発環境の RBAC 状態。内容は確認していないが、ユーザー名などが含まれる可能性がある）。 **状態: 対応済み（2026-09-24）**。`git rm --cached` で git の管理対象から外した（`msl-setup-2.0.3/`、`msl-setup-2.1.0/`、`msl-setup-pro-2.0.3_corporate/`、`msl-setup-pro-2.1.0_corporate/`、`rbac_backup/`）。ディスク上のファイルは残っている。過去のコミットの履歴には残っているので、`rbac_backup` の内容を履歴からも消す必要があれば、別途履歴の書き換えが必要。
 - **G-4. エラー処理・ログの流儀がスクリプトごとに違う**: `0301` は `set -e` なし、`0103` / `mslcm` / `msldhcp` は独自のロガー（コンソールのみ、`logs/` に残らない）、01 / 02 / 0103 はメッセージを直書き。整理するときに統一するか、単独動作するコマンド（`mslcm` / `msldhcp`）は例外として残すかを決めておくとよい。
-- **G-5. `msldhcp` はヘッダ形式が違う**（Zelogx の標準ヘッダが無く、中身のファイル名は `deploy-vnet-dhcp-ct-v9-strict-api.sh`）。
+- **G-5. `msldhcp` はヘッダ形式が違う**（Zelogx の標準ヘッダが無く、中身のファイル名は `deploy-vnet-dhcp-ct-v9-strict-api.sh`）。**状態: 対応済み（コミット `42c3795`）**。標準ヘッダの形式にし、既存の説明は Notes に移した（コードは変更なし）。
 - **G-6. `todo.md`**: クォータ機能（0302 と `scripts/zelogx-quota-*`）は無期限延期と書かれている。整理の対象にするか、参考資料として残すかは判断が必要。
 - **G-7. クラスタ処理が失敗したときの「Check logs for details: logs/」は誤った案内**: 0103 と `mslcm` はコンソールにしか出力しないので、`logs/` には手がかりが残らない。該当箇所は [01_networkSetup.sh:179](../01_networkSetup.sh#L179)・[:247](../01_networkSetup.sh#L247)・[:321](../01_networkSetup.sh#L321) と [99_uninstall.sh:197](../99_uninstall.sh#L197)。SDN（0102）、VM（0201/0202）、RBAC（0301）の失敗時の同じ案内は、各スクリプトが `logs/` に書いているので正しい。**状態: 対応済み（コミット `f9096ce`）**。クラスタ処理に関する 4 か所から案内を削除した。
 - **G-8. `mslcm` の `check_cluster_state` のメッセージをサブコマンド間で共用している**: 非クラスタで `disable-cluster` / `add-node` / `del-node` を実行しても、「'mslcm enable-cluster' can only be used after creating a cluster.」と表示される（[mslcm:117-124](../mslcm#L117-L124)）。F-1 の修正で 0103 経由では発生しなくなり、表示されるのは手動で実行した場合だけ。**状態: 対応しない（ユーザー判断、2026-09-24）**。
+- **G-9. 公開リポジトリに `.gitignore` が無い**（2026-09-25 追記）: リリースのスナップショット（`msl-setup-<ver>/`）に `.gitignore` が無く、`release_msl_setup.sh` はそれを公開リポジトリへ `rsync --delete` で反映しているので、公開リポジトリにも無い。公開リポジトリを clone して使うと、実行時生成物（`.env`, `.uuid`, `.last_created_vmid`, `logs/`, `backup/`, `sdn_backup/`, `docs/generated/`, `docs/pritunl_config_reference.md`）が未追跡ファイルとして並び、`git add -A` でコミットされうる（pve20 で `.env` がコミットされたことで判明）。`.env` はネットワーク構成を、`logs/` は実行ログを含む。対応案: 実行時生成物だけを並べた公開用の `.gitignore` をリリースに含める（`make_release_mslpro*.sh` の同梱物に追加するか、`release_msl_setup.sh` で配置する）。**状態: 対応済み（コミット `c90d497`）**。`scripts/public.gitignore`（実行時生成物だけ）を追加し、`make_release_mslpro.sh` がリリースディレクトリに `.gitignore` としてコピーする（`release_msl_setup.sh` 経由で公開リポジトリにも入る）。Corporate 版の zip には入れない。scratchpad の git リポジトリで、実行時生成物が無視され、`docs/pritunl_config_reference_template.md` などのリリースファイルは無視されないことを確認した。リリーススクリプトは実行していないので、次のリリース時に `msl-setup-<ver>/.gitignore` ができることを確認する。
+- **G-10. 「送信されるデータ」の Wiki（`GITHUB_WIKI_DATA_SENT_*.md`）に、インストール ID の送信が書かれていない**（2026-09-25 追記）: 文書は「0201 の UDP ポート転送の確認で送信する。データは UDP 転送の確認**のみ**に使う」と説明している。実際には、00 の起動時（`<UUID>_00_start`）と 01 / 02 の各フェーズ（`01_start` / `02_start` / `02_done`）で、インストール ID（`.uuid`）とフェーズ名を `get_token` API に POST している（`00_configNetwork.sh` の `_post_start_probe`、`lib/probe.sh`）。外部送信に関する公開の説明なので、文面はユーザーが判断する。Impact Report には送信している事実だけを記載した。**状態: 後回し**（公開中の Wiki はリポジトリ内の元原稿と一致していないので、公開文書への反映と合わせてユーザーが後で判断する、2026-09-25）。

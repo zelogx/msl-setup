@@ -5,8 +5,9 @@
 # © 2025 Zelogx. Zelogx™ and the Zelogx logo are trademarks
 # of the Zelogx Project. All other marks are property of their respective owners.
 #
-# Filename: 03_pritunl_setup.sh
-# Purpose: Pritunl initial configuration (automated portion - free version)
+# Filename: 0202_configurePritunl.sh
+# Purpose: Install and configure Pritunl / MongoDB on the Pritunl VM and
+#          create per-project servers and organizations
 #
 # Main functions/commands used:
 #   - ssh: Remote command execution on Pritunl VM
@@ -21,12 +22,14 @@
 #   - Phase 2 completed: Pritunl VM deployed and accessible
 #
 # Usage:
-#   ./03_pritunl_setup.sh [en|jp]
+#   ./0202_configurePritunl.sh [en|jp]
+#   Normally called from 02_vpnSetup.sh.
 #
 # Notes:
-#   - Pritunl free version does not support API token authentication
-#   - This script performs automated CLI-based setup only
-#   - Organization/Server creation requires GUI (documented in Phase 3.5)
+#   - Servers are inserted into MongoDB by pritunl_build_helper inside the VM;
+#     organizations are created, attached and started via the Pritunl HTTP API
+#     (initial admin account). No Web UI automation.
+#   - Takes a VM snapshot on first run and rolls back to it on re-runs
 #   - VM deployed with root user (cloud-init disable_root: false)
 ################################################################################
 
@@ -56,12 +59,12 @@ source lib/pritunl_install.sh
 
 # Load environment variables
 if [ ! -f .env ]; then
-    die ".env file not found. Please run 01_setup_sdn.sh first."
+    die ".env file not found. Please run ./00_configNetwork.sh first."
 fi
 source .env
 
 # Setup logging
-setup_logging "03_pritunl_setup"
+setup_logging "0202_configurePritunl"
 
 ################################################################################
 # Function: refresh_ssh_known_hosts
@@ -89,7 +92,7 @@ log_info ""
 # Verify Phase 2 completion
 log_info "Verifying Phase 2 completion..."
 if [ ! -f .last_created_vmid ]; then
-    die "Phase 2 not completed. No VM found. Please run 02_deploy_pritunl.sh first."
+    die "Phase 2 not completed. No VM found. Please run ./02_vpnSetup.sh first."
 fi
 
 VMID=$(cat .last_created_vmid)

@@ -1,0 +1,12 @@
+# Zelogx MSL Setup - files generated at runtime (not part of the release).
+# Installed as .gitignore in the Personal edition release / public repository
+# by make_release_mslpro.sh.
+.env
+.uuid
+.last_created_vmid
+logs/
+backup/
+sdn_backup/
+rbac_backup/
+docs/generated/
+docs/pritunl_config_reference.md

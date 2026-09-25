@@ -184,11 +184,6 @@ ip_in_cidr() {
     broadcast="$(printf '%s\n' "$calc_out" | awk '/^Broadcast:/ {print $2; exit}')"
 
     if [[ -z "$network" || -z "$broadcast" ]]; then
-        network="$(ipcalc -n "$cidr" 2>/dev/null | awk -F= '/NETWORK/ {print $2; exit}' | cut -d/ -f1)"
-        broadcast="$(ipcalc -b "$cidr" 2>/dev/null | awk -F= '/BROADCAST/ {print $2; exit}')"
-    fi
-
-    if [[ -z "$network" || -z "$broadcast" ]]; then
         log_error "Failed to resolve network/broadcast from CIDR: $cidr"
         return 1
     fi
@@ -540,6 +535,77 @@ append_backup_entry_to_cluster_env() {
 }
 
 ################################################################################
+# Function: record_host_fw_options
+# Description: Record a node's host firewall options (enable, nftables) in
+#              cluster.env as HOSTFW=<ip>,<enable>,<nftables> before add-node
+#              changes them. An existing record is kept, so re-running add-node
+#              does not overwrite the pre-MSL values. Missing keys count as 0
+#              (same as 0102's backup of the local node).
+#
+# Main commands/functions used:
+#   - pvesh/jq: Read node firewall options
+################################################################################
+record_host_fw_options() {
+    local node_ip="$1"
+    local node_name="$2"
+    local values
+
+    touch "$CLUSTER_ENV"
+    if grep -qF "HOSTFW=${node_ip}," "$CLUSTER_ENV"; then
+        log_info "Host firewall options of ${node_name} already recorded; keeping them"
+        return 0
+    fi
+
+    if ! values="$(pvesh get "/nodes/${node_name}/firewall/options" --output-format json \
+            | jq -r '"\(.enable // 0),\(.nftables // 0)"')" || [[ -z "$values" ]]; then
+        log_error "Failed to read host firewall options of ${node_name}"
+        exit 1
+    fi
+
+    printf 'HOSTFW=%s,%s\n' "$node_ip" "$values" >> "$CLUSTER_ENV"
+    log_info "Recorded host firewall options of ${node_name}: enable,nftables=${values}"
+}
+
+################################################################################
+# Function: restore_host_fw_options
+# Description: Put a node's host firewall options back to the values recorded
+#              by record_host_fw_options, then drop the record. Nodes added by
+#              an older version have no record and are disabled as before.
+#
+# Main commands/functions used:
+#   - pvesh: Set node firewall options
+#   - awk/mv: Remove the HOSTFW line from cluster.env
+################################################################################
+restore_host_fw_options() {
+    local node_ip="$1"
+    local node_name="$2"
+    local record fw_enable fw_nft tmp_file
+
+    record="$(grep -m1 -F "HOSTFW=${node_ip}," "$CLUSTER_ENV" 2>/dev/null || true)"
+    if [[ -n "$record" ]]; then
+        IFS=, read -r _ fw_enable fw_nft <<< "${record#HOSTFW=}"
+    else
+        log_warn "No recorded host firewall options for ${node_name} (added by an older version); disabling as before"
+        fw_enable=0
+        fw_nft=0
+    fi
+
+    log_info "Restoring host firewall options on ${node_name} (enable=${fw_enable}, nftables=${fw_nft})..."
+    if pvesh set "/nodes/${node_name}/firewall/options" -enable "$fw_enable" -nftables "$fw_nft" >/dev/null 2>&1; then
+        log_info "Host firewall options restored on ${node_name}"
+    else
+        log_warn "Failed to restore host firewall options on ${node_name}; continuing cleanup"
+        return 0
+    fi
+
+    if [[ -n "$record" ]]; then
+        tmp_file="$(mktemp "${STATE_DIR}/.cluster.env.tmp.XXXXXX")"
+        awk -v ip="$node_ip" 'index($0, "HOSTFW=" ip ",") != 1 { print }' "$CLUSTER_ENV" > "$tmp_file"
+        mv "$tmp_file" "$CLUSTER_ENV"
+    fi
+}
+
+################################################################################
 # Function: remove_backup_entry_from_cluster_env
 # Description: Remove BACKUP entry for target node IP from cluster.env.
 #
@@ -613,52 +679,90 @@ remove_vrrp_peers_fw_rule() {
 }
 
 ################################################################################
+# Function: list_msl_zones
+# Description: Print MSL SDN zone names (vpndmz and devpj01..NUM_PJ), one per line.
+#
+# Main commands/functions used:
+#   - seq/printf: Build zone names from NUM_PJ
+################################################################################
+list_msl_zones() {
+    local i
+    printf '%s\n' "vpndmz"
+    for i in $(seq 1 "$NUM_PJ"); do
+        printf 'devpj%02d\n' "$i"
+    done
+}
+
+################################################################################
+# Function: set_zone_peer
+# Description: Add or remove a node IP in one SDN zone's peer list idempotently.
+#              SDN apply is left to the caller.
+#
+# Main commands/functions used:
+#   - pvesh/jq: Read and update SDN zone peers
+################################################################################
+set_zone_peer() {
+    local zone="$1"
+    local node_ip="$2"
+    local action="$3"
+    local json peers new_peers present=false
+
+    json="$(pvesh get "/cluster/sdn/zones/${zone}" --output-format json 2>/dev/null || true)"
+    if [[ -z "$json" ]]; then
+        log_warn "Zone ${zone} not found; skipping peer ${action}"
+        return 0
+    fi
+
+    peers="$(printf '%s' "$json" | jq -r '.peers // ""')"
+    if printf ',%s,' "$peers" | grep -q ",${node_ip},"; then
+        present=true
+    fi
+
+    case "$action" in
+        add)
+            if [[ "$present" == true ]]; then
+                log_info "Zone ${zone}: peer ${node_ip} already present; skipping"
+                return 0
+            fi
+            new_peers="${peers:+${peers},}${node_ip}"
+            ;;
+        remove)
+            if [[ "$present" != true ]]; then
+                log_info "Zone ${zone}: peer ${node_ip} not present; skipping"
+                return 0
+            fi
+            new_peers="$(printf '%s' "$peers" | tr ',' '\n' | awk -v n="$node_ip" '$0!=n' | paste -sd ',' -)"
+            ;;
+        *)
+            log_error "set_zone_peer: unknown action: ${action}"
+            return 1
+            ;;
+    esac
+
+    new_peers="$(printf '%s' "$new_peers" | tr ',' '\n' | sed '/^$/d' | awk '!seen[$0]++' | paste -sd ',' -)"
+    pvesh set "/cluster/sdn/zones/${zone}" -peers "$new_peers" >/dev/null
+    if [[ "$action" == add ]]; then
+        log_info "Zone ${zone}: added peer ${node_ip} -> ${new_peers}"
+    else
+        log_info "Zone ${zone}: removed peer ${node_ip} -> ${new_peers}"
+    fi
+}
+
+################################################################################
 # Function: remove_zone_peers
 # Description: Remove target node IP from vpndmz and all devpjXX zone peer lists.
 #
 # Main commands/functions used:
-#   - pvesh/jq: Read/update SDN zone peers
+#   - set_zone_peer: Update each zone's peers
+#   - pvesh: SDN apply
 ################################################################################
 remove_zone_peers() {
     local node_ip="$1"
-    local json peers new_peers
+    local zone
 
-    # Remove from vpndmz zone peers first
-    json="$(pvesh get "/cluster/sdn/zones/vpndmz" --output-format json 2>/dev/null || true)"
-    if [[ -n "$json" ]]; then
-        peers="$(printf '%s' "$json" | jq -r '.peers // ""')"
-        if printf ',%s,' "$peers" | grep -q ",${node_ip},"; then
-            new_peers="$(printf '%s' "$peers" | tr ',' '\n' | sed '/^$/d' | awk -v n="$node_ip" '$0!=n' | awk '!seen[$0]++' | paste -sd ',' -)"
-            pvesh set "/cluster/sdn/zones/vpndmz" -peers "$new_peers" >/dev/null
-            log_info "Zone vpndmz: removed peer ${node_ip} -> ${new_peers}"
-        else
-            log_info "Zone vpndmz: peer ${node_ip} not present; skipping"
-        fi
-    else
-        log_warn "Zone vpndmz not found; skipping peer removal"
-    fi
-
-    for i in $(seq 1 "$NUM_PJ"); do
-        local idx zone
-        idx=$(printf '%02d' "$i")
-        zone="devpj${idx}"
-
-        json="$(pvesh get "/cluster/sdn/zones/${zone}" --output-format json 2>/dev/null || true)"
-        [[ -n "$json" ]] || continue
-
-        peers="$(printf '%s' "$json" | jq -r '.peers // ""')"
-        if [[ -z "$peers" ]]; then
-            continue
-        fi
-
-        if ! printf ',%s,' "$peers" | grep -q ",${node_ip},"; then
-            continue
-        fi
-
-        new_peers="$(printf '%s' "$peers" | tr ',' '\n' | sed '/^$/d' | awk -v n="$node_ip" '$0!=n' | awk '!seen[$0]++' | paste -sd ',' -)"
-        pvesh set "/cluster/sdn/zones/${zone}" -peers "$new_peers" >/dev/null
-        log_info "Zone ${zone}: removed peer ${node_ip} -> ${new_peers}"
-    done
+    while IFS= read -r zone; do
+        set_zone_peer "$zone" "$node_ip" remove
+    done < <(list_msl_zones)
 
     pvesh set /cluster/sdn >/dev/null
     log_info "SDN apply completed after peer removals."
@@ -802,6 +906,8 @@ EOF
 ################################################################################
 # Function: render_keepalived_conf
 # Description: Render keepalived.conf with required template values.
+#              Writes to the local keepalived.conf unless an output path is
+#              given (add-node renders to a temp file and copies it remotely).
 #
 # Main commands/functions used:
 #   - cat: Write keepalived configuration
@@ -812,8 +918,9 @@ render_keepalived_conf() {
     local priority="$3"
     local vrid="$4"
     local auth_pass="$5"
+    local out_path="${6:-$KEEPALIVED_CONF}"
 
-    cat > "$KEEPALIVED_CONF" <<EOF
+    cat > "$out_path" <<EOF
 global_defs {
     enable_script_security
     script_user root
@@ -854,7 +961,7 @@ vrrp_instance VI_1 {
     notify_fault  "${HOOK_PATH} fault"
 }
 EOF
-    chmod 600 "$KEEPALIVED_CONF"
+    chmod 600 "$out_path"
 }
 
 ################################################################################
@@ -1045,9 +1152,6 @@ get_valid_vip() {
     calc_out="$(ipcalc "$ML_CIDR" 2>/dev/null || true)"
     broadcast="$(printf '%s\n' "$calc_out" | awk '/^Broadcast:/ {print $2; exit}')"
     if [[ -z "$broadcast" ]]; then
-        broadcast="$(ipcalc -b "$ML_CIDR" 2>/dev/null | awk -F= '/BROADCAST/ {print $2; exit}')"
-    fi
-    if [[ -z "$broadcast" ]]; then
         log_error "Failed to resolve broadcast address from ML_CIDR: $ML_CIDR"
         exit 1
     fi
@@ -1145,57 +1249,16 @@ remote_copy() {
 # Description: Add target node IP to vpndmz and all devpjXX zone peer lists idempotently.
 #
 # Main commands/functions used:
-#   - pvesh/jq: Read and update SDN zone peers
+#   - set_zone_peer: Update each zone's peers
+#   - pvesh: SDN apply
 ################################################################################
 update_zone_peers() {
     local node_ip="$1"
-    local json peers new_peers
+    local zone
 
-    # Update vpndmz zone peers first
-    json="$(pvesh get "/cluster/sdn/zones/vpndmz" --output-format json 2>/dev/null || true)"
-    if [[ -n "$json" ]]; then
-        peers="$(printf '%s' "$json" | jq -r '.peers // ""')"
-        if printf ',%s,' "$peers" | grep -q ",${node_ip},"; then
-            log_info "Zone vpndmz: peer ${node_ip} already present; skipping"
-        else
-            if [[ -z "$peers" ]]; then
-                new_peers="$node_ip"
-            else
-                new_peers="${peers},${node_ip}"
-            fi
-            new_peers="$(printf '%s' "$new_peers" | tr ',' '\n' | sed '/^$/d' | awk '!seen[$0]++' | paste -sd ',' -)"
-            pvesh set "/cluster/sdn/zones/vpndmz" -peers "$new_peers" >/dev/null
-            log_info "Zone vpndmz: peers updated -> ${new_peers}"
-        fi
-    else
-        log_warn "Zone vpndmz not found; skipping peer update"
-    fi
-
-    for i in $(seq 1 "$NUM_PJ"); do
-        local idx zone json peers new_peers
-        idx=$(printf '%02d' "$i")
-        zone="devpj${idx}"
-
-        json="$(pvesh get "/cluster/sdn/zones/${zone}" --output-format json 2>/dev/null || true)"
-        [[ -n "$json" ]] || continue
-
-        peers="$(printf '%s' "$json" | jq -r '.peers // ""')"
-
-        if printf ',%s,' "$peers" | grep -q ",${node_ip},"; then
-            log_info "Zone ${zone}: peer ${node_ip} already present; skipping"
-            continue
-        fi
-
-        if [[ -z "$peers" ]]; then
-            new_peers="$node_ip"
-        else
-            new_peers="${peers},${node_ip}"
-        fi
-
-        new_peers="$(printf '%s' "$new_peers" | tr ',' '\n' | sed '/^$/d' | awk '!seen[$0]++' | paste -sd ',' -)"
-        pvesh set "/cluster/sdn/zones/${zone}" -peers "$new_peers" >/dev/null
-        log_info "Zone ${zone}: peers updated -> ${new_peers}"
-    done
+    while IFS= read -r zone; do
+        set_zone_peer "$zone" "$node_ip" add
+    done < <(list_msl_zones)
 
     pvesh set /cluster/sdn >/dev/null
     log_info "SDN apply completed after peer updates."
@@ -1252,7 +1315,8 @@ cmd_enable_cluster() {
     vrid=51
     auth_pass="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 8 || true)"
     if [[ -z "$auth_pass" ]]; then
-        auth_pass="Ze!0gx"
+        log_error "Failed to generate keepalived auth_pass from /dev/urandom"
+        exit 1
     fi
 
     write_cluster_env "$main_if" "$vip_cidr" "$vrid" "$auth_pass"
@@ -1312,6 +1376,10 @@ cmd_add_node() {
     # and enable-cluster refuses to regenerate auth_pass it may already use.
     append_backup_entry_to_cluster_env "$target_ip"
 
+    # Remember the node's host firewall options so that del-node can put them
+    # back instead of always disabling the firewall.
+    record_host_fw_options "$target_ip" "$target_node_name"
+
     log_info "Enabling host firewall and nftables on target node ${target_node_name}..."
     if pvesh set "/nodes/${target_node_name}/firewall/options" -enable 1 -nftables 1 >/dev/null 2>&1; then
         log_info "Host firewall and nftables enabled on ${target_node_name}"
@@ -1345,47 +1413,7 @@ cmd_add_node() {
 
     local tmp_conf
     tmp_conf="$(mktemp)"
-    cat > "$tmp_conf" <<EOF
-global_defs {
-    enable_script_security
-    script_user root
-}
-
-vrrp_script check_gw_reachability {
-    script "/usr/bin/ping -c 1 -W 1 ${ML_GW}"
-    interval 2
-    weight -20
-    fall 2
-    rise 2
-}
-
-vrrp_instance VI_1 {
-    state BACKUP
-    interface ${main_if}
-    virtual_router_id ${vrid}
-    priority ${priority}
-    advert_int 1
-    nopreempt
-
-    authentication {
-        auth_type PASS
-        auth_pass ${auth_pass}
-    }
-
-    virtual_ipaddress {
-        ${vip_cidr} dev ${main_if}
-    }
-
-    track_script {
-        check_gw_reachability
-    }
-
-    notify_master "${HOOK_PATH} master"
-    notify_backup "${HOOK_PATH} backup"
-    notify_stop   "${HOOK_PATH} stop"
-    notify_fault  "${HOOK_PATH} fault"
-}
-EOF
+    render_keepalived_conf "$main_if" "$vip_cidr" "$priority" "$vrid" "$auth_pass" "$tmp_conf"
 
     remote_copy "$tmp_conf" "$target_ip" "$KEEPALIVED_CONF"
     rm -f "$tmp_conf"
@@ -1428,14 +1456,9 @@ cmd_del_node() {
         local target_node_name
         target_node_name="$(remote_exec "$target_ip" "hostname -s" 2>/dev/null | tr -d '[:space:]')"
         if [[ -n "$target_node_name" ]]; then
-            log_info "Disabling host firewall and nftables on target node ${target_node_name}..."
-            if pvesh set "/nodes/${target_node_name}/firewall/options" -enable 0 -nftables 0 >/dev/null 2>&1; then
-                log_info "Host firewall and nftables disabled on ${target_node_name}"
-            else
-                log_warn "Failed to disable host firewall/nftables on ${target_node_name}; continuing cleanup"
-            fi
+            restore_host_fw_options "$target_ip" "$target_node_name"
         else
-            log_warn "Failed to resolve target node name via SSH: ${target_ip}; skipping firewall options OFF"
+            log_warn "Failed to resolve target node name via SSH: ${target_ip}; skipping host firewall options restore"
         fi
 
         log_info "Stopping keepalived and cleaning up files on ${target_ip}..."

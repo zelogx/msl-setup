@@ -9,8 +9,11 @@
 # Purpose: Uninstall MSL setup by destroying Pritunl VM and restoring network config
 #
 # Main functions/commands used:
+#   - 0301_setupSelfCarePortal.sh --restore: Remove RBAC (Corporate edition only)
 #   - 0201_createPritunlVM.sh --destroy: Remove Pritunl VM
-#   - 0102_setupNetwork.sh --restore: Restore network configuration
+#   - 0103_clusterSetup.sh --restore: Remove cluster (keepalived/VXLAN peers) setup
+#   - 0102_setupNetwork.sh --restore: Restore network configuration, remove msldhcp
+#   - remove_network_diagram: Remove the SVG and node notes block created by 00
 #
 # Dependencies:
 #   - lib/common.sh: Common utility functions
@@ -66,6 +69,38 @@ if [ ! -f "lib/common.sh" ]; then
     exit 1
 fi
 source lib/common.sh
+
+################################################################################
+# Function: remove_network_diagram
+# Description: Remove the network diagram installed by 00_configNetwork.sh:
+#              the SVG under /usr/share/pve-manager/images and the
+#              "MSL Setup - Network Diagram" block appended to this node's
+#              notes (same block boundaries as 00 uses when replacing it).
+#
+# Main commands/functions used:
+#   - pvesh get/set: Read and update node notes
+#   - awk: Cut the block and trailing "---" separators
+################################################################################
+remove_network_diagram() {
+    local node notes new_notes
+    rm -f /usr/share/pve-manager/images/msl-setup-network-diagram.svg
+
+    node="$(hostname)"
+    notes="$(pvesh get "/nodes/${node}/config" --output-format json | jq -r '.description // ""')" || return 1
+    if ! grep -q 'MSL Setup - Network Diagram' <<< "$notes"; then
+        log_info "No MSL network diagram block in notes of node ${node}"
+        return 0
+    fi
+
+    new_notes="$(awk '/MSL Setup - Network Diagram/ {exit} {a[n++]=$0}
+        END {while (n > 0 && a[n-1] ~ /^[ \t]*---[ \t]*$/) n--; for (i = 0; i < n; i++) print a[i]}' <<< "$notes")"
+    if [[ -z "${new_notes//[[:space:]]/}" ]]; then
+        pvesh set "/nodes/${node}/config" --delete description >/dev/null || return 1
+    else
+        pvesh set "/nodes/${node}/config" --description "$new_notes" >/dev/null || return 1
+    fi
+    log_info "Removed MSL network diagram block from notes of node ${node}"
+}
 
 # Load messages
 if [ "$MSL_LANG" = "jp" ]; then
@@ -240,6 +275,15 @@ log_info "Network configuration restoration completed"
 #     log_info "0302_quotaSetup.sh not found; skipping quota restore"
 #     echo "$MSG_QUOTA_UNINSTALL_SKIPPED"
 # fi
+echo ""
+
+# ============================================================================
+# Step 5: Remove Network Diagram (created by 00_configNetwork.sh)
+# ============================================================================
+
+echo "$MSG_UNINSTALL_STEP5"
+log_info "Step 5: Removing network diagram..."
+remove_network_diagram || log_warn "Failed to remove network diagram from node notes (non-fatal)"
 echo ""
 
 # ============================================================================
