@@ -15,6 +15,21 @@
 
 ---
 
+## 作業中の項目（最終更新 2026-09-26）
+
+新しいセッションでは、まずこの一覧だけを読む。詳しい内容は ID で grep する（例: `grep -n "^### F-8" docs/REVIEW_NOTES.md`）。項目の状態が変わったらこの一覧も更新し、対応済みになった項目は一覧から外す（記録は各項目の「状態」に書く）。
+
+| ID | 概要 | 状態 | 関連 |
+|---|---|---|---|
+| H-2 | Pritunl のインストール方法を複数サポートし、利用者が選べるようにする（AlmaLinux 10 版などを後から追加） | 後回し（将来。必要になったら着手） | H-1（対応済み） |
+| G-4 | エラー処理とロガーの統一の残り（`exec_cmd_with_log` の出力先、0301 の `set -e`）。方針は H-1 で決めた（CLAUDE.md 5.2）。`mslcm` は `logs/` に出力しない | 後回し（Pending、差し迫った問題なし） | — |
+
+**後回し（ユーザー判断。こちらから蒸し返さない）**: F-12 の残りの課題（MSL より前から keepalived を使っている環境での `keepalived.conf` の上書き）、公開 Wiki への反映と G-10（リポジトリ内の `docs/wiki/GITHUB_WIKI_*.md` は公開中の Wiki と一致していない）。
+
+**対応しないと決まった項目（蒸し返さない）**: A-4, A-5, D-9, D-10 の残り, G-1 の Pritunl のパスワード, G-2, G-8, F-20（VM のホスト名。以前から）, D-11（今は 1.1.1.1 のまま）。
+
+---
+
 ## 目次（サマリ）
 
 | ID | 区分 | 概要 | 確度 |
@@ -31,19 +46,10 @@
 | B-4 | フォールバック | wget が無いときの curl 分岐 | 高 |
 | B-5 | フォールバック | VMID 採番のローカルチェック | 中 |
 | B-6 | フォールバック | `pvesh` の存在チェック | 高 |
-| B-7 | フォールバック | pritunl.conf 編集の jq → python3 → エラー | 低（推測） |
 | B-8 | フォールバック | 旧 `mslsetup-route` フックの削除 | 中 |
 | B-9 | フォールバック | DHCP range 設定時の subnet ID 組み立て | 中 |
 | B-10 | フォールバック | `dhcp-range` 削除の `""` 代替 | 低（推測） |
 | B-11 | フォールバック | ホスト FW 有効化失敗時の「すでに有効かも」 | 中 |
-| C-1 | 重複 | Pritunl VM の root ユーザー・パスワード設定 | 高（一部推測） |
-| C-2 | 重複 | SSH 公開鍵の二重読込と未使用の一時ファイル | 高 |
-| C-3 | 重複 | snippets ディレクトリ作成・user-data の書き出し | 高 |
-| C-4 | 重複 | sshd の `ListenAddress` 設定が 2 箇所 | 高 |
-| C-5 | 重複 | Pritunl デフォルトパスワードの取得が 3 箇所 | 高 |
-| C-6 | 重複 | `.env` とヘルパーバイナリの VM への二重転送 | 中 |
-| C-7 | 重複 | known_hosts の登録・削除 | 高 |
-| C-8 | 重複 | MongoDB の疎通確認が 4 回 | 高 |
 | C-9 | 重複 | keepalived.conf テンプレートが 2 箇所 | 高 |
 | C-10 | 重複 | zone peers 更新・削除で vpndmz だけ別コピー | 高 |
 | C-11 | 重複 | IP 変換・プライベート IP 判定関数が複数 | 高 |
@@ -58,6 +64,7 @@
 | E-1〜E-10 | 文書と実装の食い違い | | — |
 | F-1〜F-10 | 不具合の可能性 | 単一ノードでの再実行・アンインストール失敗など | 中〜低 |
 | G-1〜G-8 | その他 | セキュリティ上の観察、リポジトリ管理、メッセージ | — |
+| H-1〜H-2 | Pritunl VM 系 | 作り直し、インストール方法の追加 | — |
 
 ---
 
@@ -175,6 +182,8 @@
 - **消した場合のリスク**: イメージの内容が変わった場合に影響する。どちらか一方の経路に統一する場合は、cloud-init の `packages` で明示的にインストールすると確実。
 - **確度**: 低（推測。イメージの内容は未確認）
 - **状態: 後回し**。VM 内で動く処理なので、`pritunl_install.sh` の作り直し（F-8 を参照）で扱う。
+- **状態: 対応済み（H-1、コミット `30049ba`）**。python3 だけで編集する（`vm_install.sh` の step 9）。
+- **訂正（2026-09-26）**: 実際には VM に jq が入っていて（pve20 で jq-1.6 を確認）、使われていたのは jq の経路だった（F-21 を参照）。
 
 ### B-8. 旧 `mslsetup-route` フックの削除
 - **場所**: [lib/common.sh:496-513](../lib/common.sh#L496-L513)（`persist_vpn_pool_route` / `remove_vpn_pool_route_hooks`）、呼び出しは [0102:213](../0102_setupNetwork.sh#L213)、[0102:221](../0102_setupNetwork.sh#L221)
@@ -228,6 +237,7 @@
   - パスワード文字列が 3 ファイルに分散しているので、変更時に漏れが起きやすい。
 - **消した場合のリスク**: 4 を消したあと、もし `--ciuser` が実際には効いていた場合、既定ユーザー（AlmaLinux の `almalinux`）が作られるなど挙動が変わる可能性がある。2 と 3 はどちらか一方を消しても動く見込みだが、`60-cloudimg-settings.conf` や `50-cloud-init.conf` を削除する処理との順序に依存するので、片方に寄せる場合は実機で確認が必要。
 - **確度**: 重複そのものは高。`--ciuser` が無効という点は低（推測）
+- **状態: 対応済み（H-1、コミット `4707d01`）**。root の初期パスワードを `lib/common.sh` の `PRITUNL_VM_ROOT_PASSWORD` にまとめ（値は変えない、G-2）、`ssh_pwauth: true`・`--ciuser root`・`--cipassword` のコメントを削除した。pve20 で確認した（2026-09-26。H-1 の「実機テスト」を参照）：パスワードでの root ログイン（sshpass）と公開鍵でのログインができ、`sshd -T` は permitrootlogin / passwordauthentication / pubkeyauthentication が yes、listenaddress が PT_IG_IP だけ。
 
 ### C-2. SSH 公開鍵の二重読込と、使われない一時ファイル
 - **場所**: [lib/vm_utils.sh:421-426](../lib/vm_utils.sh#L421-L426)、[lib/vm_utils.sh:439-441](../lib/vm_utils.sh#L439-L441)、[lib/vm_utils.sh:572](../lib/vm_utils.sh#L572)
@@ -235,12 +245,14 @@
 - **重複と判断した根拠**: 公開鍵は user-data の `ssh_authorized_keys`（[:458-459](../lib/vm_utils.sh#L458-L459)）で渡している。`/var/lib/vz/snippets/pritunl-vm-<id>-sshkey.pub` は書き出すだけで `qm set --sshkeys` には渡しておらず、最後に削除される。`ssh_pubkey` は 422 行目と 440 行目で 2 回読み込まれ、`local` も 2 回宣言されている。
 - **消した場合のリスク**: なし（一時ファイルは参照されていない）。
 - **確度**: 高
+- **状態: 対応済み（H-1、コミット `4707d01`）**。公開鍵は 1 回だけ読み、`-sshkey.pub` の一時ファイルをやめた。
 
 ### C-3. snippets ディレクトリの作成と user-data の書き出し
 - **場所**: [lib/vm_utils.sh:424](../lib/vm_utils.sh#L424) と [:570](../lib/vm_utils.sh#L570)（`mkdir -p` が 2 回）、[:444](../lib/vm_utils.sh#L444) と [:571](../lib/vm_utils.sh#L571)（`/tmp` に書き出してから snippets にコピー）
 - **重複と判断した根拠**: 同じディレクトリを 2 回作っている。user-data は snippets に直接書き出せば足りる。
 - **消した場合のリスク**: 小さい。現状は `qm set --cicustom`（[:560](../lib/vm_utils.sh#L560)）の**後に** snippets へコピーしているが、qm set の時点ではファイルの存在を確認しないはずなので問題は起きていない（推測）。直接書き出す形に変えれば、この順序の問題もなくなる。
 - **確度**: 高
+- **状態: 対応済み（H-1、コミット `4707d01`）**。user-data はインストール方法の `profile.sh`（`render_cloudinit_userdata`）で作り、snippets に直接書き出してから `qm set --cicustom` を実行する。
 
 ### C-4. sshd の `ListenAddress` 設定が 2 箇所
 - **場所**: [lib/vm_utils.sh:474-481](../lib/vm_utils.sh#L474-L481)（cloud-init で `sshd_config.d/99-msl.conf` に `ListenAddress $PT_IG_IP` を書き、sshd を再起動）、[lib/pritunl_install.sh:261-273](../lib/pritunl_install.sh#L261-L273)（`apply_security_hardening` で `sshd_config` 本体から `ListenAddress` 行を消して追記し、sshd を再起動）
@@ -248,6 +260,7 @@
 - **重複と判断した根拠**: 同じ設定を 2 つのファイルに書いている。後者は `sshd_config.d` 側の設定を消さないので、同じアドレスの `ListenAddress` が 2 行ある状態になる（sshd が 2 回目の bind 失敗をログに出す可能性があるが、**推測**で未確認）。`sshd_config.backup` も実行のたびに上書きされる。
 - **消した場合のリスク**: cloud-init 側を消すと、0202 が終わるまでの間 sshd が全インターフェースで待ち受ける。0202 側を消すと、cloud-init が失敗した場合の保険がなくなる（ただし `wait_for_cloudinit` で完了を確認している）。
 - **確度**: 高
+- **状態: 対応済み（H-1、コミット `30049ba`）**。sshd_config 本体への追記をやめ、cloud-init の `99-msl.conf` だけにした。`vm_install.sh` の最後で 22 / 27017 がワイルドカード（0.0.0.0 / * / [::]）で待ち受けていないことを確認する（443 は F-21 の対応で対象外にした）。pve20 で確認した（2026-09-26。H-1 の「実機テスト」を参照）：`sshd_config` の ListenAddress は 0 行。
 
 ### C-5. Pritunl デフォルトパスワードの取得が 3 箇所
 - **場所**: [0202_configurePritunl.sh:190](../0202_configurePritunl.sh#L190)、[lib/pritunl_install.sh:533-543](../lib/pritunl_install.sh#L533-L543)（`setup_pritunl_orgs`）、[lib/pritunl_install.sh:738-746](../lib/pritunl_install.sh#L738-L746)（`save_config_to_vm_notes`）
@@ -255,12 +268,14 @@
 - **重複と判断した根拠**: 0202 は取得したパスワードを必ず両方の関数に渡している。関数側の再取得は、0202 で空だった場合にだけ、同じコマンドをもう一度実行する。
 - **消した場合のリスク**: 一時的な失敗からの回復手段がなくなる（`setup_pritunl_orgs` は空パスワードの場合に return 1 する）。関数側を消すなら、0202 側に空チェックとリトライを集約する必要がある。なお、[0202:191](../0202_configurePritunl.sh#L191) はパスワードを平文でログファイルに書いている（G-1）。
 - **確度**: 高
+- **状態: 対応済み（H-1、コミット `30049ba`）**。`get_pritunl_default_password` の 1 か所で取得し（リトライして空なら停止）、setup-orgs と VM notes に渡す。
 
 ### C-6. `.env` とヘルパーバイナリを VM に二重転送している
 - **場所**: 0201 で `.env` と `lib/pritunl_build_helper` を VM の `/root` へ転送（[0201:420](../0201_createPritunlVM.sh#L420)、[lib/vm_utils.sh:661-685](../lib/vm_utils.sh#L661-L685)）。0202 でも `.env` を `/tmp/.env` へ（[0202:181](../0202_configurePritunl.sh#L181)）、ヘルパーを `/tmp/pritunl_build_helper` へ転送（[lib/pritunl_install.sh:577-593](../lib/pritunl_install.sh#L577-L593)）
 - **重複と判断した根拠**: 0202 のスナップショットは 0201 の後に作られるので、ロールバックしても `/root` の 2 ファイルは残っている。0202 は `/root` のファイルをそのまま使える。
 - **消した場合のリスク**: 0202 だけを別の VM に対して実行するケースを想定しているなら、転送が必要になる。現状は `/tmp` 側のヘルパーだけを削除していて、`/tmp/.env` と `/root/.env` は VM に残っている。
 - **確度**: 中
+- **状態: 対応済み（H-1、コミット `30049ba`）**。0202 はインストーラー・helper・`.env` を `/root/msl-install/` にまとめて転送し、成功したら削除、失敗したら調査用に残す。0201 の `/root` への転送（validate 用）はそのまま。
 
 ### C-7. known_hosts の登録と削除
 - **場所**: [0201:291](../0201_createPritunlVM.sh#L291)（破棄時に削除）、[0201:410](../0201_createPritunlVM.sh#L410)（`ssh-keyscan` で追記）、[0202:73](../0202_configurePritunl.sh#L73)・[:106](../0202_configurePritunl.sh#L106)（再び削除し、`StrictHostKeyChecking=accept-new` で登録し直す）
@@ -268,12 +283,14 @@
 - **重複と判断した根拠**: 0201 の `ssh-keyscan` で登録した鍵は、0202 の冒頭で必ず削除される。0201 自身の SSH/SCP は `UserKnownHostsFile=/dev/null` を使っているので、この登録は使われていない。実質的には「SSH が準備できたかの確認」として働いているだけで、それは直前の `wait_for_cloudinit` がすでに確認している。
 - **消した場合のリスク**: 0201 だけを実行して 0202 を実行しない場合に、known_hosts に行が残らなくなる（悪影響は無い）。keyscan の失敗で die する部分がなくなる。
 - **確度**: 高
+- **状態: 対応済み（H-1、コミット `4707d01`）**。0201 の `ssh-keyscan` を削除した。pve20 で確認した（2026-09-26。H-1 の「実機テスト」を参照）：0201 の validate が PASSED。
 
 ### C-8. MongoDB の疎通確認が 4 回
 - **場所**: [lib/pritunl_install.sh:183-196](../lib/pritunl_install.sh#L183-L196)（ping の待機ループ）、[:199-203](../lib/pritunl_install.sh#L199-L203)（`is-active`）、[:205-210](../lib/pritunl_install.sh#L205-L210)（もう一度 ping）、[:805-811](../lib/pritunl_install.sh#L805-L811)（`perform_verification`）
 - **重複と判断した根拠**: 待機ループが成功した直後に、同じ ping をもう一度実行している。
 - **消した場合のリスク**: 小さい（205-210 行目の再 ping は WARN を出すだけ）。
 - **確度**: 高
+- **状態: 対応済み（H-1、コミット `30049ba`）**。ping の待機は 1 回だけにし、タイムアウトしたら失敗にした。確認は `vm_install.sh` の最後の 1 回。
 
 ### C-9. keepalived.conf のテンプレートが 2 箇所
 - **場所**: [mslcm:801-850](../mslcm#L801-L850)（`render_keepalived_conf`）と [mslcm:1324-1364](../mslcm#L1324-L1364)（`cmd_add_node` 内のヒアドキュメント）
@@ -371,7 +388,7 @@
 - **D-8: 対応済み（コミット `f957cee`）**。C-15 と一緒に到達しない分岐を削除した。
 - **D-9: 対応しない（残す）**。v2.0-c 用のプレースホルダ（ユーザー判断）。
 - **D-10: 一部対応済み（コミット `13b2dc2`）**。コメントアウトされた戻り経路の検証（`pritunl_install.sh`）を削除した。`pritunl-openvpn` の版固定の yum 行（問題が起きたときの控え）と、99 のクォータの restore（0302 が延期中）は残す（ユーザー判断）。
-- **D-11: 検討中（現状維持）**。`dns_servers` は VPN クライアントに配布する DNS で、1.1.1.1 固定は暫定対処。本来は 00 で新しい設定項目として定義させるべきか検討中（ユーザー、2026-09-25）。
+- **D-11: 検討中（現状維持）**。`dns_servers` は VPN クライアントに配布する DNS で、1.1.1.1 固定は暫定対処。本来は 00 で新しい設定項目として定義させるべきか検討中（ユーザー、2026-09-25）。 **状態: 今は対処しない（ユーザー判断 2026-09-26）**。1.1.1.1 のままで問題は出ないと判断した。
 
 ---
 
@@ -404,7 +421,7 @@
 - **状態: 対応済み**。README（EN）を実際の 4 ステップに修正した。README_jp にはステップの記載が無いので、変更していない。
 
 ### E-6. 「元の状態に戻せる」という記述と、アンインストール後に残るもの
-- **文書**（[GITHUB_WIKI_IMPACT_EN.md](../GITHUB_WIKI_IMPACT_EN.md)）: 「`99_uninstall.sh` removes the configuration added by MSL Setup and is intended to return to the pre-run state.」。実行フローの説明は v1.x のまま（0103 / mslcm / keepalived / msldhcp / if-up フックの記載が無い）。
+- **文書**（[GITHUB_WIKI_IMPACT_EN.md](wiki/GITHUB_WIKI_IMPACT_EN.md)）: 「`99_uninstall.sh` removes the configuration added by MSL Setup and is intended to return to the pre-run state.」。実行フローの説明は v1.x のまま（0103 / mslcm / keepalived / msldhcp / if-up フックの記載が無い）。
 - **実装**: 静的に読んだ限り、アンインストール後に次のものが残る。`/usr/local/bin/msldhcp`、msldhcp が作った DHCP CT・ホストの systemd unit・`/usr/local/sbin/msl-dhcp-export-all`・`/var/lib/mslsetup/`、`/usr/share/pve-manager/images/msl-setup-network-diagram.svg` とノード notes の図のブロック、`/var/lib/vz/snippets/pritunl-vm-*-userdata.yml`、クラウドイメージのキャッシュ。
 - **状態: 対応済み（コード: コミット `61a43ce`、Wiki の元原稿: コミット `c26667c`）**。リポジトリ内の Wiki の元原稿は、公開中の Wiki と一致していない（ユーザー、2026-09-25）。公開 Wiki への反映方法は、ユーザーが後で決める。
   - 0201: VM の削除時に user-data の snippet も削除する（VM 起動のたびに cloud-init の ISO を再生成するので、VM がある間は必要）。
@@ -419,7 +436,7 @@
 - [0202_configurePritunl.sh:26-30](../0202_configurePritunl.sh#L26-L30) の Notes: 「Pritunl free version does not support API token authentication」「Organization/Server creation requires GUI」→ 現在は自動化されている。
 - エラーメッセージが古いファイル名を案内している: [0201:330](../0201_createPritunlVM.sh#L330)（`01_setup_sdn.sh`）、[0202:59](../0202_configurePritunl.sh#L59)・[:92](../0202_configurePritunl.sh#L92)、[lib/env_generator.sh:58](../lib/env_generator.sh#L58)（生成される `.env` に「Re-run 00_check_env.sh」と書かれる）。
 - [lib/pritunl_install.sh:59-68](../lib/pritunl_install.sh#L59-L68): コメントとリポジトリ名は「MongoDB 8.0」だが、baseurl は `8.2`。
-- **状態: 対応済み（コミット `0f920fc`）**。利用者に表示されるメッセージ（`.env` が無いときの案内 en / jp、0201 / 0202 のエラー、00 の使い方、生成される `.env` のコメント）、00 / 0102 / 0201 / 0202 のヘッダ（Filename・Usage・0202 の Notes・0102 の「差分のみ適用」）、ログの文脈名、lib のコメントを現行に合わせた。0102 / `lib/common.sh` / 00 の日本語コメント 35 行を英語にした。`lib/pritunl_install.sh` の MongoDB 8.0 / 8.2 の食い違いは Pritunl VM 系の作り直しで扱う。pve20 で、00 が生成した `.env` のコメント、`01 --restore` と `01` の完了、`.env` が無いときの 0102 の jp メッセージ、`msldhcp --help` を確認した（2026-09-25）。
+- **状態: 対応済み（コミット `0f920fc`）**。利用者に表示されるメッセージ（`.env` が無いときの案内 en / jp、0201 / 0202 のエラー、00 の使い方、生成される `.env` のコメント）、00 / 0102 / 0201 / 0202 のヘッダ（Filename・Usage・0202 の Notes・0102 の「差分のみ適用」）、ログの文脈名、lib のコメントを現行に合わせた。0102 / `lib/common.sh` / 00 の日本語コメント 35 行を英語にした。`lib/pritunl_install.sh` の MongoDB 8.0 / 8.2 の食い違いは Pritunl VM 系の作り直しで扱う。（H-1 で対応済み、コミット `30049ba`：repo id とコメントを 8.2 にそろえた。gpgkey は 8.0 の鍵のままで、pve20 で mongodb-org-server 8.2.12 がインストールできることを確認した）pve20 で、00 が生成した `.env` のコメント、`01 --restore` と `01` の完了、`.env` が無いときの 0102 の jp メッセージ、`msldhcp --help` を確認した（2026-09-25）。
 
 ### E-8. 0102 のコメント「vpndmzvn インターフェースが存在する場合のみ設定」
 - **場所**: [0102_setupNetwork.sh:466-470](../0102_setupNetwork.sh#L466-L470)
@@ -508,6 +525,7 @@
 - **確度**: 高
 - **追記（2026-09-25）**: 178・496 行目付近はもっと重い問題がある。失敗時の診断出力 `ssh ... "systemctl status ..." | tee -a "$LOG_FILE"` は、サービスが失敗していると `systemctl status` が 3 を返すので、`set -euo pipefail` の下でその行で終了する。`journalctl` の出力と `die` のメッセージが出ないまま 0202 が終わる（`log_error` の行はログに残り、02 は「Pritunl 設定が失敗しました」と表示する）。
 - **状態: 後回し（リファクタリングで対応、ユーザー判断 2026-09-25）**。`pritunl_install.sh` は 1 コマンドずつ ssh の stdin に送る作りになっている（インストール中の状況をホストのコンソールにも表示するため）。これを、VM 上で実行するインストール用スクリプト 1 本（`set -euo pipefail` と ERR trap で診断出力を出し、終了コードを返す）に作り直すときに、まとめて解消する。C-4・C-5・C-8 など Pritunl VM 系の重複の整理も同じ作業で扱う。
+- **状態: 対応済み（H-1、コミット `30049ba`）**。`vm_install.sh` は `set -Eeuo pipefail` と ERR / EXIT の trap で、失敗したステップ・コマンド・行番号・終了コードと診断情報（df、パッケージ、mongod / pritunl の status と journal）を出す。ホストは ssh の終了コードで判定する。pve20 で確認した（2026-09-26。H-1 の「実機テスト」を参照）：`systemctl enable --now mongod-x` に書き換えて実行し、step 5 で停止して診断情報が出て、0202 が `exit code: 1` で終了し、VM に `/root/msl-install` が残ることを確認した。
 
 ### F-9. 0102 は `.env` と `sdn_backup` を相対パスで参照している
 - **場所**: [0102_setupNetwork.sh:97](../0102_setupNetwork.sh#L97)、[:186](../0102_setupNetwork.sh#L186)
@@ -567,6 +585,7 @@
 - **内容**: restore はバックアップ（MSL 導入前の状態）に無い zone / vnet / subnet / IPSet をすべて削除し、DC / ホストの FW オプションをバックアップ時の値に戻す。MSL の導入中に利用者が作った zone や IPSet も対象になり、01 の再実行・`01 --restore`・アンインストールで削除される。Wiki の Impact Report の「Existing VNet/IPSet/Zone names are preserved」「Backup/restore operates within the scope of MSL-managed resources」と食い違っていた。
 - **検討した案**: 削除対象を MSL の名前（`vpndmz`, `devpjNN`, `vpndmzvn`, `vnetpjNN`, MSL の IPSet）に限る案（B）は、他者が同名で作ったものも削除されるうえ、FW ルールはコメント以外に識別手段が無く、「MSL が追加したものだけを削除する」ことにはならない。
 - **状態: 対応しない（仕様として文書化、ユーザー判断 2026-09-25）**。README / README_jp の Known Issues に明記した（コミット `8a7d684`）。利用者が増えて具体的な issue が挙がったら、正式な対応方法を検討する。
+- **状態（2026-09-27 に変更）: 対応済み（zone / VNet / subnet / IPSet、コミット `95ad03d`、ユーザー判断）**。案 B（名前で絞る）に変えた。`.env` のコピー（`.env.last-installed` など）は作らず、名前のパターン（`MSL_ZONE_NAME_REGEX` / `MSL_VNET_NAME_REGEX` / `MSL_IPSET_NAME_REGEX`、`lib/sdn_backup_restore.sh`）で判断する（NUM_PJ に依存しない。FW ルールのコメントのパターン一致（F-4）と同じ考え方）。削除の条件は「MSL の名前に一致し、かつバックアップに無い」。subnet は MSL の VNet に属するものだけを削除する。0102 の予約名チェック（A-1）も同じ定数を使う。A-1 の予約名チェックで、導入時に同じ名前が無いことを確認できるようになったので、「名前が一致する＝MSL が作ったもの」とみなせるようになった。DC / ホストの FW オプションをバックアップ時の値に戻す点は変えていない（README の Known Issues の記述をこの内容に改めた。Wiki の Impact Report の元原稿も更新した）。偽の pvesh で、MSL のもの・導入後に利用者が作ったもの・導入前からあるもの・似た名前（`devpj1`）・導入前からある VNet に後から足した subnet を混ぜて restore し、MSL の名前のものだけが削除されることを確認した。pve20 で別の名前の zone / VNet / subnet / IPSet を作ってから 01 を再実行し、MSL のものだけが削除・再作成され、作った 1 組が残ることを確認した（2026-09-27。確認後にその 1 組は削除した）。
 
 ### F-18. restore / アンインストール後もバックアップが残り、次の導入で古いバックアップが使われる（2026-09-25 追記）
 - **内容**: `sdn_backup/`（と `.backup_complete`）、`rbac_backup/` はアンインストール後も残っていた（回帰テストで確認）。アンインストール後に利用者が SDN や FW オプションを変更してから再導入すると、01 は古いバックアップで restore するので、変更したものが削除される・元に戻される。
@@ -577,6 +596,42 @@
 - **内容**: add-node は対象ノードのホスト FW を有効にするが、それ以前の状態を記録していない。del-node（`0103 --restore`、`01` の再実行、アンインストール）は無条件に無効にするので、MSL の導入前から pve14 / pve15 のホスト FW を有効にしていた環境では、restore 後に FW が無効になる。ローカルノード（MASTER）は 0102 の restore がバックアップの値に戻すので影響しない。F-12（keepalived）と同じ系統で、セキュリティに関わる。
 - **対応案**: add-node の前に対象ノードの `enable` / `nftables` の値を記録し（F-12 と同じく各ノードの `/var/lib/mslsetup/` など）、del-node でその値に戻す。
 - **状態: 対応済み（コミット `19fbb5e`、文書は `4717bce`）**。add-node はホスト FW を有効にする前に、そのノードの `enable` / `nftables` を `cluster.env` に `HOSTFW=<ip>,<enable>,<nftables>` として記録し（既にあれば上書きしない）、del-node は記録した値に戻して行を削除する。記録が無いノード（以前の版で add-node したもの）は従来どおり無効にして WARN を出す。偽の pvesh で記録・再実行時の保持・1/1 と 0/0 への復元・記録なしを確認した。pve13 で、pve14（導入前に有効）と pve15（無効）について `HOSTFW=192.168.77.61,1,1` / `HOSTFW=192.168.77.62,0,0` が記録され、`01 --restore` 後にそれぞれ有効・無効に戻ることを確認した（2026-09-25）。
+
+---
+
+### F-20. Pritunl VM のホスト名が `localhost` になる（2026-09-26、実機で判明）
+- **場所**: `lib/pritunl_installers/alma9/profile.sh` の `render_cloudinit_userdata`（`hostname: pritunl-vm-<vmid>`、`manage_etc_hosts: true`）
+- **内容**: pve20 の VM で `hostname` / `/etc/hostname` が `localhost` だった。cloud-init のログに `Updating hostname to localhost (pritunl-vm-100)` とある。AlmaLinux の cloud-init は FQDN を優先して設定し、`hostname` だけを指定した場合に FQDN が決まらず `localhost` になったと考えられる（**推測**）。user-data のこの部分は H-1 で変えていないので、以前からの動きと思われる（未確認）。
+- **影響**: 表示上の問題。Pritunl と VPN の動作には影響しない（pve20 のテストで確認）。
+- **対応案**: user-data に `fqdn: pritunl-vm-<vmid>` を追加するか、`prefer_fqdn_over_hostname: false` を指定する。
+- **状態: 対応しない（ユーザー判断 2026-09-26）**。以前から `localhost` だった。
+
+### F-21. WireGuard で接続すると 30〜60 秒で切断される（2026-09-26、ユーザーが pve20 で確認）
+- **内容**: H-1 の実機テストの後、ユーザーが Pritunl にユーザーを追加して VPN プロファイルを取得し、Pritunl Client から OpenVPN と WireGuard の両方で接続した。どちらも接続でき、各テナントの GW（pve20）に ssh / https / ping が通った。ただし WireGuard は 30〜60 秒で切断される。
+- **原因（2026-09-26、Pritunl Client のサービスログと VM で確認）**: Pritunl Client は WireGuard の接続後、同期（`GET /key/sync/...`）と keepalive（`PUT /key/wg/...`、`ping_interval=30`）を、**トンネルの中の WireGuard サーバー側のアドレス（例: `wg0` の 192.168.81.129）の 443 番**に送る。MSL は pritunl.conf の `bind_addr` を PT_IG_IP にしているので、Web サーバーは 192.168.77.71:443 でしか待ち受けておらず、接続が拒否（RST）される。`Keepalive failed` → `Disconnecting` → 再接続を繰り返す。keepalive はトンネルの中を通るので、LAN の外から接続しても同じになる。OpenVPN は Web サーバーへの接続を使わないので影響しない。
+- **いつから（訂正、2026-09-26）**: `bind_addr` を PT_IG_IP にする処理はコミット `9db14a9`（2026-01-25）で入ったが、ホスト側で `PT_IG_IP=... ssh ... bash <<'EOF'` としていたため環境変数が VM に渡らず、VM 内の jq が `bind_addr` に `""` を書いていた（v2.0.1 の VM でも `"bind_addr": ""`、`*:443` で待ち受け。ユーザーが確認）。**H-1 で python3 に環境変数を正しく渡すようになり、初めて PT_IG_IP だけで待ち受けるようになった結果、WireGuard が切れるようになった**（最初の記録の「H-1 とは関係ない」は誤り）。
+- **状態: 対応済み（コミット `49d802a`、ユーザー判断 2026-09-26）**。`bind_addr` を設定しない（パッケージの既定値 `0.0.0.0` のまま）。`vm_install.sh` の最後の確認は、ワイルドカードで待ち受けてはいけないポートを 22 / 27017 だけにした。CLAUDE.md の設計原則 2.4 の記述を「SSH は PT_IG_IP だけ、Web（443）は全アドレス」に改めた。 pve20 で 0202 を再実行し、443 が `*:443`、22 が PT_IG_IP だけ、27017 が 127.0.0.1 だけで待ち受けること、WireGuard で接続して切断されなくなったこと（ユーザー）を確認した（2026-09-26）。
+
+### F-22. ルーターの設定の案内が、クラスタでは途中で変わる（2026-09-27 追記、ユーザー指摘）
+- **内容**: 0102 の最後で「static route → PVE_IP、ポートフォワード」の案内を出し、クラスタでは続く 0103（と mslcm `enable-cluster`）が「static route を VIP に変えてください」と出していた。01 を再実行すると、最初の `0103 --restore` が「PVE_IP に戻してください」も出すので、1 回の実行で宛先の違う案内が 3 回出て、利用者が迷う。`--restore` / アンインストールの後の「PVE_IP に戻してください」は、static route そのものが不要になるので正しくない。
+- **対応（ユーザー承認 2026-09-27）**: ルーターの案内は `lib/router_prompt.sh` の関数にまとめ、01 の最後に 1 回だけ出す。`prompt_router_setup` は、`/etc/pve/mslsetup/cluster.env` に `MAIN_VIP` があれば VIP、無ければ PVE_IP を static route の宛先にする。`01 --restore` と 99 の最後は `prompt_router_cleanup`（static route とポートフォワードは不要になった旨）を出す。0102 と 0103 の案内（`resolve_*` 関数とメッセージを含む）を削除し、mslcm は 0103 から呼ばれたとき（`MSLCM_NO_ROUTER_HINT=1`）だけ static route の案内を出さない（手で実行したときは出す）。案内を読ませるための 01 の途中の「Press any key」も削除した。0102 を単独で実行したときは案内を出さない（通常は 01 から実行するため）。案内（01 の最後の「次のステップ」を含む）は、出力先が端末のときだけシアンで表示する（ユーザー指示 2026-09-27。ログやパイプには制御文字を出さない）。
+- **確認（2026-09-27）**: scratchpad で、単一ノード / クラスタ（cluster.env に MAIN_VIP）/ restore 後の表示を en / jp で確認した。pve20（単一ノード）で 01 を再実行し、途中で止まらず、最後に 1 回だけ PVE_IP 宛ての案内が出ることを確認した。pve13（3 ノードクラスタ、ユーザーの了承を得てこの環境で実行）で 01 を初回実行し、mslcm の static route の案内が出ず、最後に 1 回だけ `gateway 192.168.77.63 (VIP)` の案内が出ることを確認した。pve13 の 01 の再実行では、最初の `0103 --restore`（del-node / disable-cluster）が「PVE_IP に戻してください」を出さないことを確認したが、その後の `enable-cluster` が F-23 で止まったため、再実行の最後の表示は確認できていない（初回実行と同じ処理）。`01 --restore` で「ルーター設定の削除」の案内が出ることを確認した。
+- **再確認（2026-09-27、F-23 の修正後、pve13）**: 01 の初回実行・再実行とも、最後に 1 回だけ `gateway 192.168.77.63 (VIP)` の案内が出て、再実行の最初の `0103 --restore` は PVE_IP の案内を出さなかった。`01 --restore` で「ルーター設定の削除」の案内が出た。シアンは出力先が端末のときだけ付くこと（`script` で確認）、パイプでは制御文字が出ないことを確認した。
+- **状態: 対応済み（コミット `73d668d`・`da11584`、ユーザー判断 2026-09-27）**
+
+### F-23. mslcm の対話入力が、標準入力が EOF のとき無限にループする（2026-09-27、pve13 のテストで判明）
+- **場所**: [mslcm](../mslcm) の `read -r -p` を使う 3 か所（VIP の入力、インターフェースの選択、ノードの選択）。`while true` の中で `read` の失敗を確認していない。
+- **内容**: pve13 で `printf '192.168.77.63\n' | ./01_networkSetup.sh en` として 01 を再実行したところ、最初の `0103 --restore`（mslcm `del-node`）の中の ssh が標準入力を読んでしまい、`enable-cluster` の VIP の入力が EOF になった。`read` が失敗しても空の値で「Invalid IPv4 format.」を出してループを続け、約 20 分で約 4 GB を出力して `/tmp` を埋めた（こちらでプロセスを止めた）。端末の無い環境（cron、ssh -T、パイプ）で実行したときにも起きる。
+- **関連**: `enable-cluster` は VIP を聞く前に keepalived / arping をインストールしているので、ここで止まると、cluster.env が無いまま keepalived / arping が残る。0103 の restore は cluster.env が無いとクラスタの片付けを飛ばすので、`01 --restore` では削除されない（pve13 では、mslcm の削除処理と同じ内容を手で実行して片付けた）。
+- **対応案**: `read` が失敗したら（EOF）、エラーメッセージを出して終了する。あわせて、VIP の入力をパッケージのインストールより前に行うか、途中で止まったときに記録済みのパッケージを削除できるようにする。
+- **cluster.env が無かった理由（ユーザーの質問への回答）**: `enable-cluster` は「パッケージのインストール → VIP の入力 → cluster.env の書き込み」の順で動く。再実行の最初の `0103 --restore` が設計どおり `/etc/pve/mslsetup`（cluster.env を含む）を削除し、その後の VIP の入力で止まったので、cluster.env が書かれなかった。
+- **対応（ユーザー承認 2026-09-27、ブランチ `fix/router-guidance`）**: mslcm の `read -r -p` の 3 か所で、`read` が失敗したらエラーを出して終了する。VIP が使われていないかの確認に arping を使うので、パッケージのインストールを VIP の入力より後ろには移せない。代わりに `enable-cluster` は、インターフェースの検出か VIP の入力に失敗したら、`remove_packages_local`（記録にあるパッケージだけを purge）を実行してから終了する。scratchpad で、標準入力が空・誤入力のあと EOF・誤入力のあと正しい VIP の 3 ケースを確認した。
+- **確認（2026-09-27、pve13）**: 標準入力を空にして 01 を実行し、`No VIP entered` で 1 回だけで止まり、keepalived / arping を削除して 01 がエラーで終了することを確認した。その後 `01 --restore`、VIP を渡しての初回実行・再実行、`01 --restore` がすべて完了し、3 ノードとも keepalived / arping / VIP が残っていないことを確認した。
+- **状態: 対応済み（コミット `da11584`）**
+
+## リリース v2.1.4（2026-09-27）
+
+v2.1.3 以降の対応を v2.1.4 としてリリースする（ユーザー判断。利用者にとっての新機能は無いので、パッチ版）。主な内容: H-1（Pritunl のインストールを VM 内のスクリプト 1 本に）、H-3（helper をスクリプトに）、F-17（restore で削除するのは MSL の名前のものだけ）、F-22（ルーターの案内を 01 の最後に 1 回だけ、シアンで）、F-23（mslcm の対話入力の EOF）。作業中に入れて同じ作業で直した F-21（WireGuard の切断）は、公開済みの版に影響しないのでリリースノートに書いていない。残りの項目: H-2 と G-4（どちらも後回し）。あわせて、実行時に生成される `docs/pritunl_config_reference.md` を `.gitignore` に入れ、git の管理から外した（ユーザー判断）。
 
 ---
 
@@ -610,10 +665,54 @@ pve20（単一ノード、公開版 v2.1.2 の clone）に、Personal 版の同�
   - 0301 の Selfcare ユーザーのパスワード: `logs/msl-setup_*.log` に平文で出力されていることを実機で確認した（2026-09-24、pve13 の `logs/msl-setup_20260924_182109.log` と `logs/msl-setup_20260716_152519.log`）。**状態: 対応済み（コミット `78076ec`）**。`exec_cmd_with_log` で `--password '...'` を `***` にマスクし、ログファイルと失敗時のコンソール表示の両方に適用した。pve13 のログで `--password '***'` になっていることを確認した（2026-09-24）。作成したユーザーの一覧表をコンソールに一度だけ表示する動作は、意図したものなので変更しない。
 - **G-2. Pritunl VM の root パスワードが全インストールで共通の固定値**（C-1）。SSH は MainLAN 側 IP でだけ待ち受けており、VM notes で変更を促してはいる。**状態: 対応しない（ユーザー判断、2026-09-24）**。VM notes で初回ログイン時の変更を促すことで対処とする。パスワードを乱数で生成しても notes に記載する以上は同じ問題が残る、という判断。
 - **G-3. `.gitignore` の対象なのに git 管理されているもの**: `msl-setup-2.0.3/`、`msl-setup-2.1.0/` などのリリーススナップショット（`msl-setup-*/`）、`rbac_backup/*.json`（開発環境の RBAC 状態。内容は確認していないが、ユーザー名などが含まれる可能性がある）。 **状態: 対応済み（2026-09-24）**。`git rm --cached` で git の管理対象から外した（`msl-setup-2.0.3/`、`msl-setup-2.1.0/`、`msl-setup-pro-2.0.3_corporate/`、`msl-setup-pro-2.1.0_corporate/`、`rbac_backup/`）。ディスク上のファイルは残っている。過去のコミットの履歴には残っているので、`rbac_backup` の内容を履歴からも消す必要があれば、別途履歴の書き換えが必要。
-- **G-4. エラー処理・ログの流儀がスクリプトごとに違う**: `0301` は `set -e` なし、`0103` / `mslcm` / `msldhcp` は独自のロガー（コンソールのみ、`logs/` に残らない）、01 / 02 / 0103 はメッセージを直書き。整理するときに統一するか、単独動作するコマンド（`mslcm` / `msldhcp`）は例外として残すかを決めておくとよい。
+- **G-4. エラー処理・ログの流儀がスクリプトごとに違う**: `0301` は `set -e` なし、`0103` / `mslcm` / `msldhcp` は独自のロガー（コンソールのみ、`logs/` に残らない）、01 / 02 / 0103 はメッセージを直書き。整理するときに統一するか、単独動作するコマンド（`mslcm` / `msldhcp`）は例外として残すかを決めておくとよい。 **方針（H-1、2026-09-26）**: ホストの番号付きスクリプトと lib は `lib/common.sh` のロガー。別の場所で動く単独のスクリプト（VM 内の `vm_install.sh`、`mslcm`、`msldhcp`）は自前の最小限のロガーでコンソールにだけ出し、ログに残すのは呼び出す側の役割とする（CLAUDE.md 5.2）。**状態: 後回し（Pending、ユーザー判断 2026-09-26）**。残り（`exec_cmd_with_log` の出力先、0301 の `set -e`）は差し迫った問題がない。`mslcm` はどのディレクトリからでも実行する単独コマンドなので、`logs/` には出力しない（01 から呼ぶ場合も取り込まない）。
 - **G-5. `msldhcp` はヘッダ形式が違う**（Zelogx の標準ヘッダが無く、中身のファイル名は `deploy-vnet-dhcp-ct-v9-strict-api.sh`）。**状態: 対応済み（コミット `42c3795`）**。標準ヘッダの形式にし、既存の説明は Notes に移した（コードは変更なし）。
-- **G-6. `todo.md`**: クォータ機能（0302 と `scripts/zelogx-quota-*`）は無期限延期と書かれている。整理の対象にするか、参考資料として残すかは判断が必要。
+- **G-6. `todo.md`**: クォータ機能（0302 と `scripts/zelogx-quota-*`）は無期限延期と書かれている。整理の対象にするか、参考資料として残すかは判断が必要。**状態: 対応済み（ユーザー判断 2026-09-26）**。内容が古いので `todo.md` を削除した。クォータ機能のファイル（0302 と `scripts/zelogx-quota-*`）は残している。
 - **G-7. クラスタ処理が失敗したときの「Check logs for details: logs/」は誤った案内**: 0103 と `mslcm` はコンソールにしか出力しないので、`logs/` には手がかりが残らない。該当箇所は [01_networkSetup.sh:179](../01_networkSetup.sh#L179)・[:247](../01_networkSetup.sh#L247)・[:321](../01_networkSetup.sh#L321) と [99_uninstall.sh:197](../99_uninstall.sh#L197)。SDN（0102）、VM（0201/0202）、RBAC（0301）の失敗時の同じ案内は、各スクリプトが `logs/` に書いているので正しい。**状態: 対応済み（コミット `f9096ce`）**。クラスタ処理に関する 4 か所から案内を削除した。
 - **G-8. `mslcm` の `check_cluster_state` のメッセージをサブコマンド間で共用している**: 非クラスタで `disable-cluster` / `add-node` / `del-node` を実行しても、「'mslcm enable-cluster' can only be used after creating a cluster.」と表示される（[mslcm:117-124](../mslcm#L117-L124)）。F-1 の修正で 0103 経由では発生しなくなり、表示されるのは手動で実行した場合だけ。**状態: 対応しない（ユーザー判断、2026-09-24）**。
 - **G-9. 公開リポジトリに `.gitignore` が無い**（2026-09-25 追記）: リリースのスナップショット（`msl-setup-<ver>/`）に `.gitignore` が無く、`release_msl_setup.sh` はそれを公開リポジトリへ `rsync --delete` で反映しているので、公開リポジトリにも無い。公開リポジトリを clone して使うと、実行時生成物（`.env`, `.uuid`, `.last_created_vmid`, `logs/`, `backup/`, `sdn_backup/`, `docs/generated/`, `docs/pritunl_config_reference.md`）が未追跡ファイルとして並び、`git add -A` でコミットされうる（pve20 で `.env` がコミットされたことで判明）。`.env` はネットワーク構成を、`logs/` は実行ログを含む。対応案: 実行時生成物だけを並べた公開用の `.gitignore` をリリースに含める（`make_release_mslpro*.sh` の同梱物に追加するか、`release_msl_setup.sh` で配置する）。**状態: 対応済み（コミット `c90d497`）**。`scripts/public.gitignore`（実行時生成物だけ）を追加し、`make_release_mslpro.sh` がリリースディレクトリに `.gitignore` としてコピーする（`release_msl_setup.sh` 経由で公開リポジトリにも入る）。Corporate 版の zip には入れない。scratchpad の git リポジトリで、実行時生成物が無視され、`docs/pritunl_config_reference_template.md` などのリリースファイルは無視されないことを確認した。リリーススクリプトは実行していないので、次のリリース時に `msl-setup-<ver>/.gitignore` ができることを確認する。
 - **G-10. 「送信されるデータ」の Wiki（`GITHUB_WIKI_DATA_SENT_*.md`）に、インストール ID の送信が書かれていない**（2026-09-25 追記）: 文書は「0201 の UDP ポート転送の確認で送信する。データは UDP 転送の確認**のみ**に使う」と説明している。実際には、00 の起動時（`<UUID>_00_start`）と 01 / 02 の各フェーズ（`01_start` / `02_start` / `02_done`）で、インストール ID（`.uuid`）とフェーズ名を `get_token` API に POST している（`00_configNetwork.sh` の `_post_start_probe`、`lib/probe.sh`）。外部送信に関する公開の説明なので、文面はユーザーが判断する。Impact Report には送信している事実だけを記載した。**状態: 後回し**（公開中の Wiki はリポジトリ内の元原稿と一致していないので、公開文書への反映と合わせてユーザーが後で判断する、2026-09-25）。
+
+---
+
+## H. Pritunl VM 系の作り直しと、インストール方法の追加（2026-09-26 追記）
+
+### H-1. Pritunl VM 系の作り直し
+- **場所**: [lib/pritunl_install.sh](../lib/pritunl_install.sh)、[lib/vm_utils.sh](../lib/vm_utils.sh)、[0201_createPritunlVM.sh](../0201_createPritunlVM.sh)、[0202_configurePritunl.sh](../0202_configurePritunl.sh)
+- **内容**: `lib/pritunl_install.sh` は、1 コマンドずつ ssh の stdin に送る作りになっている。これを、VM 上で実行するインストール用のスクリプト 1 本にまとめる（`set -euo pipefail` と ERR trap で診断情報を出し、終了コードを返す。インストール中の状況はホストのコンソールとログに流す）。
+- **追加（ユーザー判断 2026-09-26）**: helper の setup-orgs（Pritunl の API で Org の作成・紐付け・Server の起動をするだけ）を、ホストのシェル（curl / jq）に置き換える。helper は VM の中でだけ実行するようにする。
+- **含める項目**: F-8、C-1〜C-8（C-1 は重複の整理だけ。固定のパスワードは G-2 のとおり変えない）、B-7、E-7 の残り（MongoDB 8.0 / 8.2 の表記）。G-4（エラー処理とロガーの統一）の方針も、この設計案の中で決める。
+- **H-2 への備え**: インストール方法によって変わる部分（クラウドイメージの定義、cloud-init の差分、VM の中で実行するインストーラー、`pritunl_build_helper` のバイナリ）を、インストール方法ごとのディレクトリ（例: `pritunl_installers/alma9/`）にまとめる。ホスト側の 0201 / 0202 は共通の処理として、そのディレクトリの中身を使う。今は alma9 だけなので、選ぶ仕組みは作らない。
+- **進め方**: 最初に設計案を出して承認を得る。新しいファイルは `make_release_mslpro*.sh` にも追加する。
+- **状態: 対応済み（コミット `4e2bab3`・`4707d01`・`30049ba`・`6568381`・`f8d12e3`・`ce268cb`）**。
+  - その 1（`4e2bab3`）: `lib/pritunl_installers/alma9/`（`profile.sh`、`msl_pritunl_selinux_port.sh`、`pritunl_build_helper`）にまとめた。`build_pyinstaller.sh --installer <id>`。リリース用スクリプトは lib を丸ごと同梱するので、SELinux スクリプトの個別コピーを削除した。
+  - その 2（`4707d01`）: C-1 / C-2 / C-3 / C-7。
+  - その 3（`30049ba`）: `vm_install.sh`（12 ステップ）。F-8 / C-4 / C-5 / C-6 / C-8 / B-7 / E-7。IP フォワーディングは `/etc/sysctl.d/99-msl-pritunl.conf` に書く。
+  - その 4（`6568381`）: setup-orgs を helper からホストのシェル（curl / jq）に置き換えた（ユーザー判断）。helper は VM の中でだけ実行する。
+  - 実機で見つかった問題（`f8d12e3`・`ce268cb`）: helper mongodb が Pritunl を再起動した直後は、GUI と `/state` が応答しても `POST /auth/session` が 10 秒ほど 404 を返す。ログインそのものを、404 / 5xx / 接続できない間リトライする（3 秒おきに最大 40 回）。
+- **実機テスト（2026-09-26、pve20、単一ノード。v2.1.3 の clone にブランチの Personal 版一式を取り込み）**:
+
+| 順番 | 実行 | 結果 |
+|---|---|---|
+| 1 | `01_networkSetup.sh`（初回と 2 回目） | 完了 |
+| 2 | `02_vpnSetup.sh en` | 0201 は validate まで PASSED。0202 は VM 内の 12 ステップが完了したが、Org の作成でログインが 404 になり失敗（`f8d12e3`・`ce268cb` で修正） |
+| 3 | `0202_configurePritunl.sh en`（修正後、2 回） | スナップショットへのロールバック → 12 ステップ → ログインのリトライ（000 → 404 → 成功）→ Org 4 組の作成・紐付け・Server の起動 → VM notes。完了 |
+| 4 | VM の状態 | 22 / 443 は PT_IG_IP だけ、27017 は 127.0.0.1 だけ。root のパスワード / 公開鍵ログイン可。`/root/msl-install` は削除済み。ip_forward=1（sysctl.d）。MongoDB 8.2.12、pritunl 1.34.4681.89、pritunl-openvpn 2.7.5。ログに `[VM]` 行が 1153 行 |
+| 5 | `qm reboot` の後 | ip_forward、eth1 の PJALL_CIDR ルート、mongod / pritunl が維持される。API で Server01〜04 が online、pj01〜04 が紐付いている |
+| 6 | 失敗の注入（`mongod-x`） | step 5 で停止、失敗したコマンドと行・診断情報・`exit code: 1`、`/root/msl-install` が残る。元に戻して 0202 を再実行し完了 |
+
+  - VPN の接続（ユーザー）: Pritunl にユーザーを追加し、Pritunl Client から OpenVPN / WireGuard の両方で接続できた。各テナントの GW に ssh / https / ping が通った。WireGuard は 30〜60 秒で切断される（F-21。H-1 で `bind_addr` が意図どおり PT_IG_IP に設定されるようになったことが原因）。
+  - テストで気づいたこと: VM のホスト名が `localhost` になる（F-20、以前から）。01 は最後にキー入力を待つので、端末の無い ssh 経由では `printf x |` で入力を渡した。
+
+### H-2. Pritunl のインストール方法を複数サポートする
+- **背景（ユーザー、2026-09-26）**: 今の実装は、Pritunl の推奨構成に沿って AlmaLinux 9 をベースにしている（もともとは Ubuntu ベースだったものを書き換えた）。EOL などで状況は変わるので、いずれ AlmaLinux 10 ベースのインストール方法が必要になる。新しいインストール方法を後から簡単に追加でき、複数を並べてサポートし、利用者がどれでインストールするかを選べるようにしたい。
+- **helper**: H-3 でバイナリをやめ、`lib/pritunl_build_helper.py`（標準ライブラリだけ）を VM の python3 で実行する形にした。インストール方法で共通にしている。新しい OS の python3 で動くかを確認し、Pritunl の版によって MongoDB への登録内容を変える必要が出たら、インストール方法ごとのディレクトリに分ける（ユーザー判断 2026-09-26）。
+- **H-2 で必要になるもの**: インストール方法の選択（00 の設定項目にするか、0201 で選ばせるか）、`.env` か `.last_created_vmid` への記録（0202 と `--destroy` が同じ方法を使うため）、リリースへの同梱。
+- **状態: 後回し（将来。H-1 の構成を前提にする。ユーザー判断 2026-09-26）**
+
+### H-3. helper をバイナリからスクリプトにする（2026-09-26 追記）
+- **背景（ユーザー）**: helper をバイナリにしていたのは、probe の仕組み（API、固定の値）をあまり見せたくなかったため。probe サーバーは送信元の IP にしか UDP を返さないので、スクリプトを公開してもよいと判断した。H-1 で setup-orgs をシェルに置き換えたので、バイナリにする意味も薄くなった。
+- **変更**: `scripts/pritunl_build_helper.py` を `lib/pritunl_build_helper.py` に移し（`scripts/` はリリースに含まれない）、setup-orgs（`PritunlWebClient` など）と `requests` / `urllib3` を削除した。validate / mongodb は標準ライブラリと外部コマンド（curl、nc、jq、mongosh、openssl）だけで動き、Python 3.9 の文法で読める。0201 は `python3 /root/pritunl_build_helper.py validate`、`vm_install.sh` は `python3 .../pritunl_build_helper.py mongodb` で実行する。バイナリ、`scripts/build_pyinstaller.sh`、cloud-init の `/tmp/.meipass` の作成を削除した。リリース用スクリプトは `__pycache__` を除外する。
+- **懸念（ユーザーに伝えた）**: probe API の仕様（エンドポイント、`magic`、手順）が公開リポジトリで読めるようになる。踏み台にはならないが、大量に呼ばれる可能性があるので、probe サーバー側の送信元 IP ごとの回数制限を確認しておくとよい。
+  - **確認済み（2026-09-26、ユーザーが probe サーバーの設定を提示）**: nginx で送信元 IP ごとに 6 回/分（burst 4）。トークンは秘密の値・送信元 IP・5 秒単位の時刻から作られ、UDP は要求元の IP にだけ、最大 64 ポート × 3 回送る。Flask は 127.0.0.1 だけで待ち受け、X-Real-IP は nginx が TCP の送信元から設定する。公開しても問題ないと判断した。回数制限はインストール ID の送信と validate で共有されるが、通常の流れでは間隔が空くので問題にならない。
+- **状態: 対応済み（コミット `569b2e8` ほか）**。pve20 で `02_vpnSetup.sh en` を実行し、0201 の validate（UDP の到達性を含む）がすべて PASSED、`vm_install.sh` の mongodb で Server 4 つを作成、Org の作成と Server の起動まで完了することを確認した（2026-09-26）。コンソールに残っていた「validation binary」の表記をスクリプトに直した。

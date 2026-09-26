@@ -197,9 +197,9 @@ However, all VMs belonging to individual projects (VMnPJxx) are completely isola
     MSL Setup identifies the Datacenter firewall rules it created by their comment, and deletes them on re-run, restore, and uninstall.  
     Do not edit the comment of these rules, and do not use comments starting with `MSLSetup` for your own rules. A renamed rule will not be removed by MSL Setup, and your own rule with a matching comment may be deleted.
 
-- **SDN objects and settings created after installing MSL Setup are reverted on re-run, restore, and uninstall**  
-    On the first run, MSL Setup backs up the SDN and firewall state as it was before MSL Setup. Every re-run of `01_networkSetup.sh`, `01_networkSetup.sh --restore`, and `99_uninstall.sh` first restores that state: SDN zones, VNets, subnets, and IPSets that are not in the backup are deleted, and the Datacenter / host firewall options are set back to the backed-up values.  
-    This also applies to zones, VNets, and IPSets that you create yourself while MSL Setup is installed. Create them before installing MSL Setup, or uninstall MSL Setup first and install it again afterwards. The backup is deleted after a successful restore / uninstall, and the next run takes a new one.
+- **Re-run, restore, and uninstall set the firewall options back to their values before MSL Setup**  
+    On the first run, MSL Setup backs up the SDN and firewall state as it was before MSL Setup. Every re-run of `01_networkSetup.sh`, `01_networkSetup.sh --restore`, and `99_uninstall.sh` first restores that state: the SDN objects that MSL Setup creates are deleted (zones `vpndmz` / `devpjNN`, VNets `vpndmzvn` / `vnetpjNN` and their subnets, IPSets `devpjs` / `mainlan` / `vpn_guest_pool` / `all_private_ip` / `vxlan_peers`), and the Datacenter / host firewall options are set back to the backed-up values.  
+    Zones, VNets, subnets, and IPSets with other names are kept. Do not use the names above for your own objects. If you change the Datacenter / host firewall options while MSL Setup is installed, set them again after a re-run or restore. The backup is deleted after a successful restore / uninstall, and the next run takes a new one.
 
 - **Error when recreating a Pritunl VM**
    When reinstalling after manually detaching a disk from the VM, an orphan volume may remain (the workaround is now shown in the error message).

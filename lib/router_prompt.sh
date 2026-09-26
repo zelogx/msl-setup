@@ -9,8 +9,8 @@
 # Purpose: Print router configuration guidance (localized, values expanded)
 #
 # Main functions/commands used:
-#   - source .env: load generated values
-#   - log_info: formatted info output
+#   - prompt_router_setup: Static route / port forward guidance (01)
+#   - prompt_router_cleanup: "no longer needed" guidance (01 --restore, 99)
 #
 # Dependencies:
 #   - .env, lib/common.sh, messages_*.sh
@@ -54,10 +54,26 @@ parse_args_router() {
 }
 
 ################################################################################
-# Function: prompt_router_setup
-# Description: Print localized router setup guidance with expanded .env values.
+# Function: router_prompt_colors
+# Description: Set ROUTER_PROMPT_COLOR / ROUTER_PROMPT_RESET (cyan) when stdout
+#              is a terminal, so that the guidance stands out. Empty otherwise
+#              (no escape codes in logs or pipes).
 ################################################################################
-prompt_router_setup() {
+router_prompt_colors() {
+  if [[ -t 1 ]]; then
+    ROUTER_PROMPT_COLOR=$'\033[36m'
+    ROUTER_PROMPT_RESET=$'\033[0m'
+  else
+    ROUTER_PROMPT_COLOR=""
+    ROUTER_PROMPT_RESET=""
+  fi
+}
+
+################################################################################
+# Function: _router_prompt_load_env
+# Description: Source .env of the project (values used in the guidance).
+################################################################################
+_router_prompt_load_env() {
   local script_dir project_root env_file
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   project_root="${PROJECT_ROOT:-$(cd "${script_dir}/.." && pwd)}"
@@ -65,34 +81,86 @@ prompt_router_setup() {
 
   # shellcheck disable=SC1090
   [[ -f "${env_file}" ]] && source "${env_file}"
+  return 0
+}
+
+################################################################################
+# Function: prompt_router_setup
+# Description: Print localized router setup guidance with expanded .env values.
+#              The static route points to the cluster VIP when the cluster mode
+#              is enabled (MAIN_VIP in /etc/pve/mslsetup/cluster.env), otherwise
+#              to PVE_IP. Shown once at the end of 01_networkSetup.sh.
+#
+# Main commands/functions used:
+#   - awk: Read MAIN_VIP from cluster.env
+#   - msg_printf: Localized lines
+################################################################################
+prompt_router_setup() {
+  local cluster_env="/etc/pve/mslsetup/cluster.env"
+  local gateway main_vip v
+
+  _router_prompt_load_env
 
   # Ensure required vars exist
-  local need=(PJALL_CIDR ML_GW PF_ST_OV PF_ED_OV PF_ST_WG PF_ED_WG PT_IG_IP PT_IG_IP_LO)
+  local need=(PJALL_CIDR PVE_IP PF_ST_OV PF_ED_OV PF_ST_WG PF_ED_WG PT_IG_IP)
   for v in "${need[@]}"; do
     if [[ -z "${!v-}" ]]; then
       log_warn "router prompt: ${v} is missing in .env"
     fi
   done
 
+  gateway="${PVE_IP-}"
+  if [[ -f "${cluster_env}" ]]; then
+    main_vip="$(awk -F'=' '/^MAIN_VIP=/{print $2; exit}' "${cluster_env}")"
+    if [[ -n "${main_vip}" ]]; then
+      gateway="${main_vip%%/*} (VIP)"
+    fi
+  fi
+
+  router_prompt_colors
   echo
+  printf '%s' "${ROUTER_PROMPT_COLOR}"
   echo "========================================"
   echo "${MSG_ROUTER_TITLE}"
   echo "----------------------------------------"
   echo "${MSG_ROUTER_INTRO}"
   echo
-
-  # Build messages dynamically with values
-  # Use localized format strings from messages
-  msg_printf ROUTER_STATIC_ROUTE_LINE "${PJALL_CIDR}" "${PVE_IP}"
-  msg_printf ROUTER_PF_OV_LINE "${PF_ST_OV}" "${PF_ED_OV}" "${PT_IG_IP}"
-  msg_printf ROUTER_PF_WG_LINE "${PF_ST_WG}" "${PF_ED_WG}" "${PT_IG_IP}"
-
-  echo
-  # Localized follow-up message
-  msg_printf ROUTER_NEXT_STEP
+  msg_printf ROUTER_STATIC_ROUTE_LINE "${PJALL_CIDR-}" "${gateway}"
+  msg_printf ROUTER_PF_OV_LINE "${PF_ST_OV-}" "${PF_ED_OV-}" "${PT_IG_IP-}"
+  msg_printf ROUTER_PF_WG_LINE "${PF_ST_WG-}" "${PF_ED_WG-}" "${PT_IG_IP-}"
+  echo "========================================"
+  printf '%s' "${ROUTER_PROMPT_RESET}"
 }
 
-# Allow direct invocation
+################################################################################
+# Function: prompt_router_cleanup
+# Description: After a restore / uninstall, tell the user that the static route
+#              and port forwards on the router are no longer needed.
+#              Shown once at the end of 01_networkSetup.sh --restore and
+#              99_uninstall.sh. Prints nothing if .env has no values.
+#
+# Main commands/functions used:
+#   - msg_printf: Localized lines
+################################################################################
+prompt_router_cleanup() {
+  _router_prompt_load_env
+  [[ -n "${PJALL_CIDR-}" ]] || return 0
+
+  router_prompt_colors
+  echo
+  printf '%s' "${ROUTER_PROMPT_COLOR}"
+  echo "========================================"
+  echo "${MSG_ROUTER_CLEANUP_TITLE}"
+  echo "----------------------------------------"
+  echo "${MSG_ROUTER_CLEANUP_INTRO}"
+  echo
+  msg_printf ROUTER_CLEANUP_ROUTE_LINE "${PJALL_CIDR}"
+  msg_printf ROUTER_PF_OV_LINE "${PF_ST_OV-}" "${PF_ED_OV-}" "${PT_IG_IP-}"
+  msg_printf ROUTER_PF_WG_LINE "${PF_ST_WG-}" "${PF_ED_WG-}" "${PT_IG_IP-}"
+  echo "========================================"
+  printf '%s' "${ROUTER_PROMPT_RESET}"
+}
+
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   if ! parse_args_router "$@"; then
     exit 1

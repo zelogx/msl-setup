@@ -55,6 +55,10 @@ fi
 # Verbose mode flag (set by script arguments, default: false)
 MSL_VERBOSE="${MSL_VERBOSE:-false}"
 
+# Initial root password of the Pritunl VM. Set by cloud-init (0201) and shown
+# in the VM notes (0202), which ask the user to change it on first login.
+readonly PRITUNL_VM_ROOT_PASSWORD='Ze!0gx'
+
 # -----------------------------------------------------------------------------
 # Function: setup_logging
 # Description: Provide an initialization entry and optional context name.

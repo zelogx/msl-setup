@@ -6,591 +6,328 @@
 # of the Zelogx Project. All other marks are property of their respective owners.
 #
 # Filename: pritunl_install.sh
-# Purpose: Pritunl installation and configuration functions
+# Purpose: Host-side functions for installing and configuring Pritunl on the
+#          Pritunl VM
 #
 # Main functions/commands used:
-#   - ssh: Remote command execution
-#   - dnf: Package installation
-#   - systemctl: Service management
-#   - pritunl: CLI configuration
+#   - run_pritunl_vm_installer: Copy the installer to the VM and run it
+#   - get_pritunl_default_password: Read the initial admin password
+#   - setup_pritunl_orgs: Create organizations via the Pritunl API (curl / jq)
+#   - save_config_to_vm_notes: Write credentials and configuration to VM notes
 #
 # Dependencies:
 #   - common.sh: Logging functions
+#   - PRITUNL_INSTALLER_DIR: Set by the caller (0202_configurePritunl.sh)
 #
 # Usage:
 #   source lib/pritunl_install.sh
 #
 # Notes:
-#   - All commands execute remotely via SSH (root user)
-#   - No sudo required (VM deployed with root user)
+#   - The installation itself runs inside the VM (<installer>/vm_install.sh).
+#     Its output is shown on the console and recorded in the log file.
+#   - All remote commands run as root over SSH.
 ################################################################################
 
+# Directory on the VM that receives the installer files
+readonly PRITUNL_VM_INSTALL_DIR="/root/msl-install"
+
 ################################################################################
-# Function: install_pritunl_packages
-# Description: Install MongoDB, OpenVPN, WireGuard, and Pritunl
+# Function: stream_vm_output
+# Description: Show each line read from stdin on the console and append it to
+#              the log file with a [VM] prefix.
 #
-# Parameters:
-#   $1 - Pritunl VM IP address
+# Main commands/functions used:
+#   - read/printf: Line-by-line copy
 ################################################################################
-install_pritunl_packages() {
-    local vm_ip="$1"
-    
-    log_info "Installing Pritunl and dependencies on ${vm_ip}..."
-    
-    # Check disk space before installation
-    log_info "Checking available disk space on ${vm_ip}..."
-    local avail_space
-    avail_space=$(ssh "root@${vm_ip}" "df -h / | awk 'NR==2 {print \$4}'")
-    local avail_mb
-    avail_mb=$(ssh "root@${vm_ip}" "df -m / | awk 'NR==2 {print \$4}'")
-    
-    log_info "Available disk space: ${avail_space} (${avail_mb} MB)"
-    
-    if [ "$avail_mb" -lt 2000 ]; then
-        log_error "Insufficient disk space: ${avail_space} available"
-        log_error "Required: At least 2GB free space"
-        log_error "Current usage:"
-        ssh "root@${vm_ip}" "df -h" | while IFS= read -r line; do
-            log_error "  $line"
-        done
-        die "Disk space check failed: only ${avail_space} available, need at least 2GB"
-    fi
-    
-        # Add MongoDB 8.0 repository
-        log_info "Adding MongoDB 8.0 repository..."
-        if ! ssh "root@${vm_ip}" bash <<'EOF'
-cat > /etc/yum.repos.d/mongodb-org.repo <<'REPO'
-[mongodb-org-8.0]
-name=MongoDB Repository
-baseurl=https://repo.mongodb.org/yum/redhat/9/mongodb-org/8.2/x86_64/
-gpgcheck=1
-enabled=1
-gpgkey=https://pgp.mongodb.com/server-8.0.asc
-REPO
-EOF
-    then
-        log_error "Failed to add MongoDB repository"
-        die "MongoDB repository setup failed (exit code: $?)"
-    fi
-    
-        # Use pritunl-openvpn provided by Pritunl RHEL repository
-        # (replaces EPEL openvpn as recommended by Pritunl)
-
-        # Add Pritunl repository (Oracle Linux 9 path per official guidance)
-        log_info "Adding Pritunl repository..."
-        if ! ssh "root@${vm_ip}" bash <<'EOF'
-cat > /etc/yum.repos.d/pritunl.repo <<'REPO'
-[pritunl]
-name=Pritunl Repository
-    baseurl=https://repo.pritunl.com/stable/yum/almalinux/9/
-gpgcheck=1
-enabled=1
-gpgkey=https://raw.githubusercontent.com/pritunl/pgp/master/pritunl_repo_pub.asc
-REPO
-sed -i 's/^\s\+//' /etc/yum.repos.d/pritunl.repo
-EOF
-    then
-        log_error "Failed to add Pritunl repository"
-        die "Pritunl repository setup failed (exit code: $?)"
-    fi
-    
-    # Install packages
-    log_info "Installing packages (this may take a few minutes)..."
-    if ! ssh "root@${vm_ip}" bash <<'EOF'
-dnf -y update
-yum -y swap openvpn pritunl-openvpn || true
-yum -y --allowerasing install pritunl-openvpn
-dnf -y install pritunl pritunl-openvpn wireguard-tools mongodb-org
-# yum -y swap openvpn pritunl-openvpn-2.6.17-1.el9.almalinux || true
-# yum -y --allowerasing install pritunl-openvpn-2.6.17-1.el9.almalinux
-# dnf -y install pritunl wireguard-tools mongodb-org
-EOF
-    then
-        local exit_code=$?
-        log_error "Package installation failed with exit code: ${exit_code}"
-        log_error "Checking disk space after failure:"
-        ssh "root@${vm_ip}" "df -h /" | tee -a "${LOG_FILE}"
-        log_error "Checking rpm status:"
-        ssh "root@${vm_ip}" "rpm -qa | grep -E 'pritunl|mongodb|openvpn|wireguard'" | tee -a "${LOG_FILE}"
-        die "Failed to install Pritunl packages (exit code: ${exit_code}). Check disk space and logs above."
-    fi
-    
-    log_info "Package installation completed"
-
-    # Load Pritunl SELinux policies and relabel files
-    log_info "Loading Pritunl SELinux policies..."
-    if ! ssh "root@${vm_ip}" bash <<'EOF'
-if command -v semodule >/dev/null 2>&1; then
-    semodule_args=()
-    [ -f /usr/share/selinux/packages/pritunl.pp ] && semodule_args+=(/usr/share/selinux/packages/pritunl.pp)
-    [ -f /usr/share/selinux/packages/pritunl_web.pp ] && semodule_args+=(/usr/share/selinux/packages/pritunl_web.pp)
-    [ -f /usr/share/selinux/packages/pritunl_dns.pp ] && semodule_args+=(/usr/share/selinux/packages/pritunl_dns.pp)
-    if [ ${#semodule_args[@]} -gt 0 ]; then
-        semodule -i "${semodule_args[@]}"
-    fi
-
-    restore_targets=()
-    [ -f /etc/pritunl.conf ] && restore_targets+=(/etc/pritunl.conf)
-    [ -d /var/lib/pritunl ] && restore_targets+=(/var/lib/pritunl)
-    [ -d /var/log/pritunl ] && restore_targets+=(/var/log/pritunl)
-    [ -d /run/pritunl ] && restore_targets+=(/run/pritunl)
-    [ -d /var/run/pritunl ] && restore_targets+=(/var/run/pritunl)
-    if [ ${#restore_targets[@]} -gt 0 ]; then
-        restorecon -Rv "${restore_targets[@]}" || true
-    fi
-fi
-EOF
-    then
-        log_warn "Failed to load Pritunl SELinux policies (non-fatal, continuing...)"
-    fi
-}
-
-################################################################################
-# Function: configure_mongodb
-# Description: Configure MongoDB to bind to localhost only
-#
-# Parameters:
-#   $1 - Pritunl VM IP address
-################################################################################
-configure_mongodb() {
-    local vm_ip="$1"
-    
-    log_info "Configuring MongoDB..."
-    
-    # Update MongoDB configuration to bind to localhost
-    ssh "root@${vm_ip}" bash <<'EOF'
-sed -i 's/^  bindIp:.*/  bindIp: 127.0.0.1/' /etc/mongod.conf
-grep -q '^setParameter:' /etc/mongod.conf || printf '\nsetParameter:\n  diagnosticDataCollectionEnabled: false\n' >> /etc/mongod.conf
-EOF
-    
-    # Start and enable MongoDB
-    log_info "Starting MongoDB service..."
-    if ! ssh "root@${vm_ip}" bash <<'EOF'
-systemctl start mongod
-systemctl enable mongod
-EOF
-    then
-        log_error "Failed to start/enable MongoDB service"
-        log_error "MongoDB service status:"
-        ssh "root@${vm_ip}" "systemctl status mongod --no-pager" | tee -a "${LOG_FILE}"
-        log_error "MongoDB logs:"
-        ssh "root@${vm_ip}" "journalctl -u mongod -n 50 --no-pager" | tee -a "${LOG_FILE}"
-        die "MongoDB service failed to start (exit code: $?)"
-    fi
-    
-    # Wait for MongoDB to be fully ready
-    log_info "Waiting for MongoDB to be ready..."
-    local max_wait=30
-    local waited=0
-    while [ $waited -lt $max_wait ]; do
-        if ssh "root@${vm_ip}" "mongosh --quiet --eval 'db.adminCommand({ping: 1})' >/dev/null 2>&1"; then
-            log_info "MongoDB is ready"
-            break
-        fi
-        sleep 2
-        waited=$((waited + 2))
+stream_vm_output() {
+    local line ts
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        printf '%s\n' "${line}"
+        printf -v ts '%(%Y-%m-%d %H:%M:%S)T' -1
+        printf '[VM] [%s] %s\n' "${ts}" "${line}" >> "${LOG_FILE}"
     done
-    
-    if [ $waited -ge $max_wait ]; then
-        log_warn "MongoDB readiness check timed out, but service is running"
-    fi
-    
-    # Verify MongoDB is running
-    if ssh "root@${vm_ip}" "systemctl is-active mongod" | grep -q "active"; then
-        log_info "MongoDB service started successfully"
-    else
-        die "MongoDB service failed to start"
-    fi
-    
-    # Test MongoDB connectivity
-    if ssh "root@${vm_ip}" "mongosh --eval 'db.adminCommand({ping: 1})'" &>/dev/null; then
-        log_info "MongoDB connectivity verified"
-    else
-        log_warn "MongoDB ping test failed (may be normal during initial startup)"
-    fi
 }
 
 ################################################################################
-# Function: configure_pritunl_initial
-# Description: Start Pritunl and retrieve setup credentials
-#
-# Parameters:
-#   $1 - Pritunl VM IP address
-################################################################################
-configure_pritunl_initial() {
-    local vm_ip="$1"
-    
-    log_info "Configuring Pritunl initial setup..."
-    
-    # Disable Pritunl auto-start and stop it if running
-    # (We will perform configuration before first clean start)
-    log_info "Ensuring Pritunl service is not running before initial configuration..."
-    if ! ssh "root@${vm_ip}" bash <<'EOF'
-set -e
-if systemctl is-active --quiet pritunl; then
-  systemctl stop pritunl || { echo "ERROR: Failed to stop pritunl"; exit 1; }
-fi
-systemctl disable pritunl || { echo "ERROR: Failed to disable pritunl"; exit 1; }
-exit 0
-EOF
-    then
-        log_error "Failed to prepare Pritunl service state (pre-start)"
-        ssh "root@${vm_ip}" "systemctl status pritunl --no-pager" | tee -a "${LOG_FILE}" || true
-        die "Pritunl pre-start service preparation failed"
-    fi
-}
-
-################################################################################
-# Function: apply_security_hardening
-# Description: Apply security hardening (bind addresses, disable port 80)
-#
-# Parameters:
-#   $1 - Pritunl VM IP address
-################################################################################
-apply_security_hardening() {
-    local vm_ip="$1"
-    
-    log_info "Applying security hardening..."
-    
-    # Disabling port 80 for Pritunl GUI
-    log_info "Disabling port 80 for Pritunl GUI..."
-    ssh "root@${vm_ip}" bash <<EOF
-pritunl set app.redirect_server false
-EOF
-    
-    # Configure SSH to listen only on PT_IG_IP
-    log_info "Configuring SSH to listen only on ${PT_IG_IP}..."
-    ssh "root@${vm_ip}" bash <<EOF
-# Backup original sshd_config
-cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup
-
-# Add ListenAddress directive (remove any existing ones first)
-sed -i '/^ListenAddress/d' /etc/ssh/sshd_config
-echo "ListenAddress ${PT_IG_IP}" >> /etc/ssh/sshd_config
-
-# Restart SSH (AlmaLinux uses 'sshd')
-systemctl restart sshd
-EOF
-    
-    log_info "Security hardening completed"
-}
-
-################################################################################
-# Function: configure_selinux_port_settings
-# Description: Configure SELinux UDP port labels and bind policy for Pritunl
+# Function: run_pritunl_vm_installer
+# Description: Copy the installer files and .env to the VM and run
+#              vm_install.sh there. Dies with the installer's exit code on
+#              failure (the files are kept on the VM for inspection).
 #
 # Parameters:
 #   $1 - Pritunl VM IP address
 #
 # Main commands/functions used:
-#   - dnf: Install SELinux policy build dependencies
-#   - scp/ssh: Transfer and execute remote helper script
-#   - checkmodule/semodule_package/semodule: Build and install custom policy module
+#   - scp/ssh: Transfer and run the installer
+#   - stream_vm_output: Console and log output
 ################################################################################
-configure_selinux_port_settings() {
+run_pritunl_vm_installer() {
     local vm_ip="$1"
-    local local_script_path="${PROJECT_ROOT}/scripts/msl_pritunl_selinux_port.sh"
+    local files=(
+        "${PRITUNL_INSTALLER_DIR}/vm_install.sh"
+        "${PRITUNL_INSTALLER_DIR}/msl_pritunl_selinux_port.sh"
+        "${PROJECT_ROOT}/lib/pritunl_build_helper.py"
+        "${PROJECT_ROOT}/.env"
+    )
+    local f
+    for f in "${files[@]}"; do
+        [[ -f "${f}" ]] || die "Installer file not found: ${f}"
+    done
 
-    log_info "Configuring SELinux port settings on ${vm_ip}..." -c
+    log_info "Copying installer files to ${vm_ip}:${PRITUNL_VM_INSTALL_DIR}..." -c
+    ssh "root@${vm_ip}" "rm -rf '${PRITUNL_VM_INSTALL_DIR}' && mkdir -p '${PRITUNL_VM_INSTALL_DIR}'" \
+        || die "Failed to prepare ${PRITUNL_VM_INSTALL_DIR} on the VM"
+    scp -q "${files[@]}" "root@${vm_ip}:${PRITUNL_VM_INSTALL_DIR}/" \
+        || die "Failed to copy installer files to the VM"
 
-    if [[ -z "${PF_ST_OV:-}" || -z "${PF_ED_OV:-}" || -z "${PF_ST_WG:-}" || -z "${PF_ED_WG:-}" ]]; then
-        die "Port range variables are not set (.env: PF_ST_OV/PF_ED_OV/PF_ST_WG/PF_ED_WG)"
+    log_info "Running the Pritunl installer on the VM (${PRITUNL_INSTALLER_DESC})..." -c
+    local rc=0
+    ssh "root@${vm_ip}" "bash '${PRITUNL_VM_INSTALL_DIR}/vm_install.sh'" 2>&1 | stream_vm_output || rc=$?
+    if [[ ${rc} -ne 0 ]]; then
+        log_error "Installer files are kept on the VM: ${PRITUNL_VM_INSTALL_DIR}" -c
+        die "Pritunl installation failed on the VM (exit code: ${rc}). See the output above." "${rc}"
     fi
 
-    if [[ ! -f "${local_script_path}" ]]; then
-        die "SELinux port helper script not found: ${local_script_path}"
-    fi
-
-    log_info "Step 1/4: Installing SELinux policy dependencies on VM..." -c
-    if ! ssh "root@${vm_ip}" "dnf install -y policycoreutils-python-utils checkpolicy policycoreutils-devel"; then
-        die "Failed to install SELinux policy dependencies on VM"
-    fi
-    log_info "Step 1/4 completed" -c
-
-    log_info "Step 2/4: Transferring SELinux port helper script to VM..." -c
-    if ! scp "${local_script_path}" "root@${vm_ip}:/root/msl_pritunl_selinux_port.sh"; then
-        die "Failed to transfer msl_pritunl_selinux_port.sh to VM"
-    fi
-    log_info "Step 2/4 completed" -c
-
-    log_info "Step 3/4: Applying SELinux UDP port labels (OpenVPN ${PF_ST_OV}-${PF_ED_OV}, WireGuard ${PF_ST_WG}-${PF_ED_WG})..." -c
-    if ! ssh "root@${vm_ip}" bash -s -- "${PF_ST_OV}" "${PF_ED_OV}" "${PF_ST_WG}" "${PF_ED_WG}" <<'EOF'
-set -euo pipefail
-
-pf_st_ov="$1"
-pf_ed_ov="$2"
-pf_st_wg="$3"
-pf_ed_wg="$4"
-
-chmod +x /root/msl_pritunl_selinux_port.sh
-cd /root
-
-for port in $(seq "$pf_st_ov" "$pf_ed_ov"); do
-    ./msl_pritunl_selinux_port.sh udp "$port"
-done
-
-for port in $(seq "$pf_st_wg" "$pf_ed_wg"); do
-    ./msl_pritunl_selinux_port.sh udp "$port"
-done
-EOF
-    then
-        die "Failed to apply SELinux UDP port labels"
-    fi
-    log_info "Step 3/4 completed" -c
-
-    log_info "Step 4/4: Installing custom SELinux policy module for pritunl_t -> openvpn_port_t udp bind..." -c
-    if ! ssh "root@${vm_ip}" bash <<'EOF'
-set -euo pipefail
-
-cat > /root/pritunl_bind_openvpn_ports.te <<'TEEOF'
-module pritunl_bind_openvpn_ports 1.0;
-
-require {
-    type pritunl_t;
-    type openvpn_port_t;
-    class udp_socket name_bind;
-}
-
-allow pritunl_t openvpn_port_t:udp_socket name_bind;
-TEEOF
-
-checkmodule -M -m -o /root/pritunl_bind_openvpn_ports.mod /root/pritunl_bind_openvpn_ports.te
-semodule_package -o /root/pritunl_bind_openvpn_ports.pp -m /root/pritunl_bind_openvpn_ports.mod
-semodule -i /root/pritunl_bind_openvpn_ports.pp
-
-# Clean up generated policy artifacts and temporary work directory
-rm -rf /root/msl-selinux-work
-rm -f /root/pritunl_bind_openvpn_ports.mod
-rm -f /root/pritunl_bind_openvpn_ports.pp
-rm -f /root/pritunl_bind_openvpn_ports.te
-EOF
-    then
-        die "Failed to install custom SELinux policy module"
-    fi
-    log_info "Step 4/4 completed" -c
-
-    log_info "SELinux port settings configured" -c
+    ssh "root@${vm_ip}" "rm -rf '${PRITUNL_VM_INSTALL_DIR}'" \
+        || log_warn "Failed to remove ${PRITUNL_VM_INSTALL_DIR} on the VM"
+    log_info "Pritunl installation on the VM completed" -c
 }
 
 ################################################################################
-# Function: configure_system_settings
-# Description: Enable IP forwarding and verify kernel modules
+# Function: get_pritunl_default_password
+# Description: Read the initial admin password with 'pritunl default-password'
+#              and store it in PRITUNL_PASSWORD. Retries, then dies if empty.
 #
 # Parameters:
 #   $1 - Pritunl VM IP address
+#
+# Main commands/functions used:
+#   - ssh: Run 'pritunl default-password' on the VM
 ################################################################################
-configure_system_settings() {
+get_pritunl_default_password() {
     local vm_ip="$1"
-    
-    log_info "Configuring system settings..."
-    
-    # Enable IP forwarding
-    log_info "Enabling IP forwarding..."
-    ssh "root@${vm_ip}" bash <<'EOF'
-sysctl -w net.ipv4.ip_forward=1
-sysctl -w net.ipv6.conf.all.forwarding=1
+    local attempt
+    PRITUNL_PASSWORD=""
 
-# Make persistent
-echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
-EOF
-    
-    log_info "System settings configured"
+    log_info "Retrieving Pritunl default password..." -c
+    for attempt in $(seq 1 10); do
+        PRITUNL_PASSWORD=$(ssh -o ConnectTimeout=10 "root@${vm_ip}" "pritunl default-password" 2>/dev/null \
+            | tail -1 | sed 's/^.*password: *//' | xargs || true)
+        if [[ -n "${PRITUNL_PASSWORD}" ]]; then
+            return 0
+        fi
+        log_info "Default password not available yet (attempt ${attempt}/10)"
+        sleep 3
+    done
+    die "Could not retrieve the Pritunl default password (pritunl default-password)"
 }
 
 ################################################################################
-# Function: configure_global_pritunl_settings
-# Description: Configure global Pritunl settings via CLI
+# Function: pritunl_api
+# Description: Call the Pritunl web API with the session cookie and CSRF token
+#              set up by setup_pritunl_orgs, and print the response body.
+#              Fails (curl exit code) on HTTP errors; 5xx responses and refused
+#              connections are retried.
 #
 # Parameters:
-#   $1 - Pritunl VM IP address
+#   $1 - HTTP method
+#   $2 - Path (e.g. /organization)
+#   $3 - (Optional) JSON request body (passed on stdin, not on the command line)
+#
+# Main commands/functions used:
+#   - curl: HTTPS request (the Pritunl certificate is self-signed)
 ################################################################################
-configure_global_pritunl_settings() {
-    local vm_ip="$1"
-    
-    log_info "Configuring global Pritunl settings..."
-    
-    # Configure Pritunl before first start
-    log_info "Configuring Pritunl settings before first start..."
-    if ! PT_IG_IP="${PT_IG_IP}" ssh "root@${vm_ip}" bash <<'EOF'
-set -e
-# Backup configuration safely
-cp /etc/pritunl.conf /etc/pritunl.conf.bak
+pritunl_api() {
+    local method="$1"
+    local path="$2"
+    local body="${3:-}"
+    local args=(
+        -sS -k --fail-with-body --max-time 30
+        --retry 30 --retry-delay 1 --retry-connrefused
+        -b "${PRITUNL_API_COOKIE}" -c "${PRITUNL_API_COOKIE}"
+        -X "${method}"
+        -H "Accept: application/json, text/javascript, */*; q=0.01"
+        -H "X-Requested-With: XMLHttpRequest"
+    )
+    if [[ -n "${PRITUNL_API_CSRF}" ]]; then
+        args+=(-H "csrf-token: ${PRITUNL_API_CSRF}")
+    fi
 
-# Use jq to edit JSON properly
-if command -v jq >/dev/null 2>&1; then
-    # Edit with jq (proper JSON manipulation)
-    jq --arg bind_addr "$PT_IG_IP" '.bind_addr = $bind_addr | .mongodb_uri = "mongodb://localhost:27017/pritunl"' /etc/pritunl.conf > /etc/pritunl.conf.tmp || { 
-        echo "ERROR: jq edit failed" >&2
-        mv /etc/pritunl.conf.bak /etc/pritunl.conf
-        exit 1
-    }
-    mv /etc/pritunl.conf.tmp /etc/pritunl.conf
-else
-    # Fallback to python3 if jq not available
-    if command -v python3 >/dev/null 2>&1; then
-        python3 <<'PYEOF' || { echo "ERROR: python3 edit failed" >&2; mv /etc/pritunl.conf.bak /etc/pritunl.conf; exit 1; }
-import json
-import os
-
-bind_addr = os.environ.get('PT_IG_IP', '').strip()
-if not bind_addr:
-    raise RuntimeError('PT_IG_IP is not set')
-
-with open('/etc/pritunl.conf', 'r') as f:
-    config = json.load(f)
-config['bind_addr'] = bind_addr
-config['mongodb_uri'] = 'mongodb://localhost:27017/pritunl'
-with open('/etc/pritunl.conf', 'w') as f:
-    json.dump(config, f, indent=4)
-PYEOF
+    if [[ -n "${body}" ]]; then
+        curl "${args[@]}" -H "Content-Type: application/json" --data-binary @- \
+            "${PRITUNL_API_URL}${path}" <<<"${body}"
+    elif [[ "${method}" != "GET" ]]; then
+        curl "${args[@]}" -H "Content-Length: 0" "${PRITUNL_API_URL}${path}"
     else
-        echo "ERROR: Neither jq nor python3 available for JSON editing" >&2
-        mv /etc/pritunl.conf.bak /etc/pritunl.conf
-        exit 1
+        curl "${args[@]}" "${PRITUNL_API_URL}${path}"
     fi
-fi
+}
 
-# Verify JSON syntax
-if command -v python3 >/dev/null 2>&1; then
-    if ! python3 -m json.tool < /etc/pritunl.conf >/dev/null 2>&1; then
-        echo "ERROR: Invalid JSON after edit; rolling back" >&2
-        mv /etc/pritunl.conf.bak /etc/pritunl.conf
-        exit 1
-    fi
-fi
+################################################################################
+# Function: _pritunl_api_login
+# Description: Log in to the Pritunl web API (session cookie) and get the CSRF
+#              token. Right after Pritunl (re)starts, the GUI and /state already
+#              answer while POST /auth/session still returns 404 for several
+#              seconds, so 404 / 5xx / no connection are retried.
+#
+# Parameters:
+#   $1 - Login request body (JSON)
+#
+# Main commands/functions used:
+#   - curl: POST /auth/session
+#   - pritunl_api: GET /state
+################################################################################
+_pritunl_api_login() {
+    local login_json="$1"
+    local max_retries=40
+    local retry_interval=3
+    local attempt out code body resp
 
-# Verify mongodb_uri is set
-if grep -q '"mongodb_uri": ""' /etc/pritunl.conf; then
-    echo "ERROR: mongodb_uri still empty after edit" >&2
-    mv /etc/pritunl.conf.bak /etc/pritunl.conf
-    exit 1
-fi
+    for ((attempt = 1; attempt <= max_retries; attempt++)); do
+        out=$(curl -sS -k --max-time 30 \
+            -b "${PRITUNL_API_COOKIE}" -c "${PRITUNL_API_COOKIE}" \
+            -X POST -H "Content-Type: application/json" --data-binary @- \
+            -w '\n%{http_code}' "${PRITUNL_API_URL}/auth/session" <<<"${login_json}" 2>/dev/null || true)
+        code="${out##*$'\n'}"
+        body="${out%$'\n'*}"
+        if [[ "${code}" == "200" ]]; then
+            break
+        fi
+        if [[ "${code}" == "404" || "${code}" == "000" || -z "${code}" || "${code}" == 5* ]]; then
+            log_info "Pritunl web API not ready (POST /auth/session: HTTP ${code:-none}, attempt ${attempt}/${max_retries}), retrying in ${retry_interval} seconds..." -c
+            sleep "${retry_interval}"
+            continue
+        fi
+        log_error "Pritunl login failed (HTTP ${code}): ${body}" -c
+        return 1
+    done
+    if [[ "${code}" != "200" ]]; then
+        log_error "Pritunl login did not succeed after $((max_retries * retry_interval)) seconds (last HTTP ${code:-none})" -c
+        return 1
+    fi
 
-exit 0
-EOF
-    then
-        log_error "Failed to apply initial Pritunl pre-start configuration"
-        ssh "root@${vm_ip}" "cat /etc/pritunl.conf" | tee -a "${LOG_FILE}" || true
-        die "Pritunl pre-start configuration failed"
+    if ! resp=$(pritunl_api GET /state); then
+        log_error "Failed to get /state: ${resp}" -c
+        return 1
     fi
-    
-    # Set DNS route via CLI after config file is ready
-    log_info "Setting vpn.dns_route via CLI..."
-    ssh "root@${vm_ip}" "pritunl set vpn.dns_route false" || log_warn "Failed to set vpn.dns_route (will continue)"
-    
-    # Start and enable Pritunl service
-    log_info "Starting Pritunl service..."
-    if ! ssh "root@${vm_ip}" bash <<'EOF'
-set -e
-systemctl start pritunl || { echo "ERROR: Failed to start pritunl"; exit 1; }
-systemctl enable pritunl || { echo "ERROR: Failed to enable pritunl"; exit 1; }
-exit 0
-EOF
-    then
-        log_error "Failed to start/enable Pritunl service"
-        log_error "Pritunl service status:"
-        ssh "root@${vm_ip}" "systemctl status pritunl --no-pager" | tee -a "${LOG_FILE}"
-        log_error "Pritunl logs:"
-        ssh "root@${vm_ip}" "journalctl -u pritunl -n 50 --no-pager" | tee -a "${LOG_FILE}"
-        die "Pritunl service failed to start (exit code: $?)"
+    PRITUNL_API_CSRF=$(jq -r '.csrf_token // empty' <<<"${resp}" 2>/dev/null || true)
+    if [[ -z "${PRITUNL_API_CSRF}" ]]; then
+        log_error "CSRF token not found in the /state response" -c
+        return 1
     fi
-    
-    # Wait for Pritunl to be ready
-    log_info "Waiting for Pritunl GUI to be ready..."
-    sleep 5
-    
-    log_info "Global Pritunl settings configured"
+    log_info "Logged in to the Pritunl API" -c
+}
+
+################################################################################
+# Function: _setup_pritunl_orgs_api
+# Description: Log in, then for each project create the organization pjNN
+#              (unless it exists), attach it to ServerNN and start the server.
+#              Returns 1 on the first error (errors are logged).
+#
+# Parameters:
+#   $1 - Pritunl default password
+#
+# Main commands/functions used:
+#   - _pritunl_api_login / pritunl_api: Pritunl web API calls
+#   - jq: Build request bodies and parse responses
+################################################################################
+_setup_pritunl_orgs_api() {
+    local password="$1"
+    local resp login_json i pj server org_id server_id
+
+    # The password goes through the environment and stdin, not argv
+    login_json=$(PRITUNL_LOGIN_PASSWORD="${password}" jq -cn '{username: "pritunl", password: env.PRITUNL_LOGIN_PASSWORD}') \
+        || { log_error "Failed to build the login request" -c; return 1; }
+    _pritunl_api_login "${login_json}" || return 1
+
+    for ((i = 1; i <= NUM_PJ; i++)); do
+        printf -v pj 'pj%02d' "${i}"
+        printf -v server 'Server%02d' "${i}"
+        log_info "--- ${pj} / ${server} ---" -c
+
+        # Organization (reuse one with the same name)
+        if ! resp=$(pritunl_api GET /organization); then
+            log_error "Failed to list organizations: ${resp}" -c
+            return 1
+        fi
+        org_id=$(jq -r --arg n "${pj}" \
+            '(if type == "object" and has("organizations") then .organizations else . end)
+             | .[] | select(.name == $n) | .id' <<<"${resp}" 2>/dev/null | head -n 1)
+        if [[ -n "${org_id}" ]]; then
+            log_info "Organization ${pj} already exists (${org_id})" -c
+        else
+            if ! resp=$(pritunl_api POST /organization "$(jq -cn --arg n "${pj}" '{name: $n, user_groups: []}')"); then
+                log_error "Failed to create organization ${pj}: ${resp}" -c
+                return 1
+            fi
+            org_id=$(jq -r '.id // empty' <<<"${resp}" 2>/dev/null || true)
+            if [[ -z "${org_id}" ]]; then
+                log_error "No id in the response when creating organization ${pj}: ${resp}" -c
+                return 1
+            fi
+            log_info "Organization created: ${pj} (${org_id})" -c
+        fi
+
+        # Server (created in MongoDB by vm_install.sh)
+        if ! resp=$(pritunl_api GET /server); then
+            log_error "Failed to list servers: ${resp}" -c
+            return 1
+        fi
+        server_id=$(jq -r --arg n "${server}" '.[] | select(.name == $n) | .id' <<<"${resp}" 2>/dev/null | head -n 1)
+        if [[ -z "${server_id}" ]]; then
+            log_error "Server ${server} not found" -c
+            return 1
+        fi
+
+        if ! resp=$(pritunl_api PUT "/server/${server_id}/organization/${org_id}" \
+                "$(jq -cn --arg o "${org_id}" --arg s "${server_id}" '{id: $o, server: $s, name: null}')"); then
+            log_error "Failed to attach ${pj} to ${server}: ${resp}" -c
+            return 1
+        fi
+        log_info "Attached ${pj} to ${server}" -c
+
+        if ! resp=$(pritunl_api PUT "/server/${server_id}/operation/start"); then
+            log_error "Failed to start ${server}: ${resp}" -c
+            return 1
+        fi
+        log_info "Started ${server}" -c
+    done
+    return 0
 }
 
 ################################################################################
 # Function: setup_pritunl_orgs
-# Description: Create Orgs, attach to Servers, and start Servers using helper binary
+# Description: Create the organizations pj01..pjNN, attach them to
+#              Server01..ServerNN and start the servers via the Pritunl web API
+#              (curl from the host). Dies on failure.
 #
 # Parameters:
 #   $1 - Pritunl VM IP address
-#   $2 - (Optional) Pritunl default password. If invalid, it will be retrieved via SSH.
+#   $2 - Pritunl default password
 #
-# Main functions/commands used:
-#   - lib/pritunl_build_helper: Generated helper binary
-#   - ssh: Retrieve default password
+# Main commands/functions used:
+#   - _setup_pritunl_orgs_api: API calls
+#   - mktemp: Session cookie file (removed afterwards)
 ################################################################################
 setup_pritunl_orgs() {
     local vm_ip="$1"
-    local passed_password="$2"
-    local setup_script="${PROJECT_ROOT}/lib/pritunl_build_helper"
-    local default_password=""
-    
-    log_info "Setting up Pritunl Organizations using API..."
-    
-    if [[ ! -f "${setup_script}" ]]; then
-        log_error "Setup script not found: ${setup_script}"
-        log_error "Please run scripts/build_pyinstaller.sh first."
-        return 1
-    fi
-    
-    # Use passed password if valid
-    if [[ -n "$passed_password" ]]; then
-        default_password="$passed_password"
-    else
-        log_info "Retrieving Pritunl default password..."
-        if ! default_password=$(ssh -o ConnectTimeout=10 "root@${vm_ip}" "pritunl default-password" 2>&1 | tail -1 | sed 's/^.*password: *//'); then
-            log_error "Failed to retrieve default password via SSH"
-            return 1
-        fi
-        # Trim whitespace just in case
-        default_password=$(echo "${default_password}" | xargs)
-    fi
-    
-    if [[ -z "${default_password}" ]]; then
-        log_error "Empty password provided or retrieved. Check Pritunl status."
-        return 1
-    fi
-    
-    log_info "Executing organization setup command..."
-    # Execute binary. If it fails, we die (no fallback requested).
-    if "${setup_script}" setup-orgs --vm-ip "${vm_ip}" --username "pritunl" --password "${default_password}" --env "${PROJECT_ROOT}/.env"; then
-        log_info "Pritunl Organizations setup completed."
-        return 0
-    else
-        log_error "Pritunl Organizations setup failed."
-        exit 1
-    fi
-}
+    local password="$2"
+    local rc=0
 
-################################################################################
-# Function: create_pritunl_servers_mongodb
-# Description: Create Pritunl VPN servers via MongoDB direct manipulation
-#              (Phase 3.9.2 automation - bypasses GUI)
-#
-# Parameters:
-#   $1 - Pritunl VM IP address
-################################################################################
-create_pritunl_servers_mongodb() {
-    local vm_ip="$1"
+    [[ -n "${password}" ]] || die "Pritunl default password is empty"
+    [[ "${NUM_PJ:-}" =~ ^[0-9]+$ ]] || die "NUM_PJ is not set in .env"
 
-    log_info "Creating Pritunl VPN servers via MongoDB direct manipulation..."
+    log_info "Setting up Pritunl Organizations using API (NUM_PJ=${NUM_PJ})..." -c
+    PRITUNL_API_URL="https://${vm_ip}"
+    PRITUNL_API_CSRF=""
+    PRITUNL_API_COOKIE=$(mktemp) || die "Failed to create a temporary cookie file"
 
-    # Copy compiled binary helper to VM
-    local binary_path="${PROJECT_ROOT}/lib/pritunl_build_helper"
-    log_info "Copying compiled helper binary to VM..."
-    if ! scp "${binary_path}" "root@${vm_ip}:/tmp/pritunl_build_helper"; then
-        die "Failed to copy helper binary to VM"
-    fi
+    _setup_pritunl_orgs_api "${password}" || rc=$?
+    command rm -f "${PRITUNL_API_COOKIE}"
+    PRITUNL_API_CSRF=""
 
-    # Make binary executable
-    ssh "root@${vm_ip}" "chmod +x /tmp/pritunl_build_helper" || die "Failed to set executable permission"
-
-    # Run compiled binary (output to both console and log)
-    log_info "Running helper binary for MongoDB server creation..."
-    ssh "root@${vm_ip}" "/tmp/pritunl_build_helper mongodb --vm-ip ${vm_ip} --env /tmp/.env" 2>&1 | tee -a "${LOG_FILE}"
-    local ssh_status="${PIPESTATUS[0]}"
-    if [[ $ssh_status -ne 0 ]]; then
-        die "Helper binary failed to create Pritunl servers"
-    fi
-
-    # Clean up
-    ssh "root@${vm_ip}" "rm -f /tmp/pritunl_build_helper" || true
+    [[ ${rc} -eq 0 ]] || die "Pritunl Organizations setup failed"
+    log_info "Pritunl Organizations setup completed" -c
 }
 
 ################################################################################
@@ -699,7 +436,7 @@ generate_pritunl_config_doc() {
 # Parameters:
 #   $1 - VM ID
 #   $2 - Pritunl VM IP address
-#   $3 - (Optional) Pritunl default password. If invalid, it will be retrieved via SSH.
+#   $3 - Pritunl default password
 #
 # Main commands/functions used:
 #   - qm: Proxmox VM management
@@ -708,8 +445,7 @@ generate_pritunl_config_doc() {
 save_config_to_vm_notes() {
     local vmid="$1"
     local vm_ip="$2"
-    local passed_password="$3"
-    local default_password=""
+    local default_password="$3"
     
     # Generate pritunl_config_reference.md from template
     generate_pritunl_config_doc
@@ -735,18 +471,6 @@ save_config_to_vm_notes() {
         setup_key="[Unable to retrieve]"
     fi
 
-    # Use passed password if valid
-    if [[ -n "$passed_password" ]]; then
-        default_password="$passed_password"
-    else
-        if ! default_password=$(ssh "root@${vm_ip}" "pritunl default-password" 2>&1 | tail -1 | sed 's/^.*password: *//'); then
-            log_warn "Could not retrieve default password"
-            default_password="[Unable to retrieve]"
-        fi
-    fi
-    # Trim whitespace
-    default_password=$(echo "${default_password}" | xargs)
-    
     # Prepend setup credentials with <BR> tags for proper line breaks in Proxmox Web UI
     local notes_header="<sup>\n\n"
     notes_header+="# Pritunl Setup Credentials\n\n"
@@ -756,7 +480,7 @@ save_config_to_vm_notes() {
     notes_header+="**Initial Password**: ${default_password}<BR>\n"
     notes_header+="## Initial credential for ssh to Pritunl VM\n\n"
     notes_header+="- User: root\n"
-    notes_header+="- Password: Ze!0gx\n\n"
+    notes_header+="- Password: ${PRITUNL_VM_ROOT_PASSWORD}\n\n"
     notes_header+="**You should change this on first login**<BR>\n\n"
     notes_header+="---\n\n"
     
@@ -769,75 +493,6 @@ save_config_to_vm_notes() {
     else
         log_info "VM notes updated successfully"
     fi
-}
-
-################################################################################
-# Function: perform_verification
-# Description: Verify all Phase 3 automated setup
-#
-# Parameters:
-#   $1 - Pritunl VM IP address
-################################################################################
-perform_verification() {
-    local vm_ip="$1"
-    
-    log_info "Performing verification..."
-    
-    # Verify no services listening on 0.0.0.0
-    log_info "Checking for services listening on 0.0.0.0..."
-    local zero_listeners
-    zero_listeners=$(ssh "root@${vm_ip}" "ss -tulpn | grep -E ':22|:443|:27017' | awk '\$5 ~ /^0\.0\.0\.0:/ {print}'" || true)
-    if [ -n "$zero_listeners" ]; then
-        log_warn "$zero_listeners"
-        die "Some services are listening on 0.0.0.0:"
-    else
-        log_info "No services listening on 0.0.0.0 (good)"
-    fi
-    
-    # Verify services are active
-    log_info "Verifying service status..."
-    if ssh "root@${vm_ip}" "systemctl is-active pritunl mongod" | grep -q "inactive\|failed"; then
-        die "Some services are not active. Check logs."
-    else
-        log_info "All services active (pritunl, mongod)"
-    fi
-    
-    # Verify MongoDB connectivity
-    log_info "Verifying MongoDB connectivity..."
-    if ssh "root@${vm_ip}" "mongosh --eval 'db.adminCommand({ping: 1})' --quiet" | grep -q "ok.*1"; then
-        log_info "MongoDB connectivity verified"
-    else
-        die "MongoDB ping test inconclusive"
-    fi
-    
-    # Verify GUI accessibility
-    log_info "Verifying Pritunl GUI accessibility..."
-    local max_retries=20
-    local retry_interval=3
-    local retry_count=0
-    local gui_accessible=false
-    
-    while [ $retry_count -lt $max_retries ]; do
-        retry_count=$((retry_count + 1))
-        log_info "Attempting to access Pritunl GUI (attempt ${retry_count}/${max_retries}): https://${vm_ip}/"
-        
-        if curl -k -s -m 10 "https://${vm_ip}/" >/dev/null 2>&1; then
-            log_info "Pritunl GUI is accessible"
-            gui_accessible=true
-            break
-        else
-            if [ $retry_count -lt $max_retries ]; then
-                log_info "GUI not yet accessible, retrying in ${retry_interval} seconds..."
-                sleep $retry_interval
-            fi
-        fi
-    done
-    
-    if [ "$gui_accessible" = false ]; then
-        die "Pritunl GUI is not accessible after ${max_retries} attempts"
-    fi
-    
-    log_info "Verification completed"
 }
 
 ################################################################################

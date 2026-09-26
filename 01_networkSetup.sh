@@ -12,6 +12,8 @@
 #   - 0103_clusterSetup.sh --restore: Revert cluster setup before rebuilding
 #   - 0102_setupNetwork.sh: Proxmox SDN and firewall configuration
 #   - 0103_clusterSetup.sh: Cluster (keepalived/VXLAN peers) setup via mslcm
+#   - prompt_router_setup / prompt_router_cleanup: Router guidance, shown once
+#     at the end (lib/router_prompt.sh)
 #
 # Dependencies:
 #   - 0102_setupNetwork.sh
@@ -75,6 +77,10 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Messages and router guidance (shown once at the end of this script)
+source "$SCRIPT_DIR/lib/messages_${LANG_ARG}.sh"
+source "$SCRIPT_DIR/lib/router_prompt.sh"
 
 load_phase_uuid_or_exit "$LANG_ARG"
 post_phase_probe_token "$LANG_ARG" "01_start"
@@ -153,6 +159,7 @@ if [[ "$RESTORE_ONLY" == true ]]; then
         echo "Phase 1 Complete: Network Configuration Restored to Backup State"
     fi
     echo "=========================================="
+    prompt_router_cleanup
     echo ""
 
     exit 0
@@ -208,15 +215,6 @@ if ! "${setup_cmd[@]}"; then
     exit 1
 fi
 
-echo ""
-if [[ "$LANG_ARG" == "jp" ]]; then
-    echo "続行するには何かキーを押してください..."
-else
-    echo "Press any key to continue..."
-fi
-read -n 1 -s -r
-echo ""
-
 ################################################################################
 # Phase 1.3: Cluster Setup
 ################################################################################
@@ -248,20 +246,24 @@ echo ""
 echo "=========================================="
 if [[ "$LANG_ARG" == "jp" ]]; then
     echo "フェーズ 1 完了: ネットワークセットアップ成功"
-    echo ""
-    echo "次のステップ:"
-    echo "  1. ルーター設定を実施してください（前のステップで表示された指示に従う）"
-    echo "  2. ルーター設定完了後、以下を実行:"
-    echo "     ./02_vpnSetup.sh jp"
 else
     echo "Phase 1 Complete: Network Setup Successful"
-    echo ""
-    echo "Next Steps:"
-    echo "  1. Configure your router (follow instructions from previous step)"
-    echo "  2. After router configuration, run:"
-    echo "     ./02_vpnSetup.sh en"
 fi
 echo "=========================================="
+
+# Router guidance: static route (PVE_IP, or the VIP in cluster mode) and port forwards
+prompt_router_setup
+
+echo ""
+printf '%s' "${ROUTER_PROMPT_COLOR}"
+if [[ "$LANG_ARG" == "jp" ]]; then
+    echo "次のステップ: 上記のルーター設定を行ってから、以下を実行してください:"
+    echo "  ./02_vpnSetup.sh jp"
+else
+    echo "Next step: after configuring your router as shown above, run:"
+    echo "  ./02_vpnSetup.sh en"
+fi
+printf '%s' "${ROUTER_PROMPT_RESET}"
 echo ""
 
 exit 0

@@ -231,7 +231,10 @@ detect_main_interface() {
 
     local sel
     while true; do
-        read -r -p "Select interface number: " sel
+        if ! read -r -p "Select interface number: " sel; then
+            log_error "No input (standard input is closed). Run mslcm in an interactive terminal."
+            exit 1
+        fi
         if [[ "$sel" =~ ^[0-9]+$ ]] && (( sel >= 1 && sel <= ${#arr[@]} )); then
             printf '%s\n' "${arr[$((sel-1))]}"
             return 0
@@ -276,7 +279,10 @@ choose_target_node() {
 
     local sel
     while true; do
-        read -r -p "Enter number: " sel
+        if ! read -r -p "Enter number: " sel; then
+            log_error "No input (standard input is closed). Run mslcm in an interactive terminal."
+            exit 1
+        fi
         if [[ "$sel" =~ ^[0-9]+$ ]] && (( sel >= 1 && sel <= ${#candidates[@]} )); then
             printf '%s\n' "${candidates[$((sel-1))]}"
             return 0
@@ -1158,7 +1164,10 @@ get_valid_vip() {
 
     while true; do
         echo "Enter MainLAN cluster VIP (shared virtual IP for keepalived) in ${ML_CIDR}:" >&2
-        read -r -p "This IP will be shared by the active node and used as the cluster access / route target: " vip
+        if ! read -r -p "This IP will be shared by the active node and used as the cluster access / route target: " vip; then
+            log_error "No VIP entered (standard input is closed). Run mslcm in an interactive terminal."
+            exit 1
+        fi
         if [[ ! "$vip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
             log_warn "Invalid IPv4 format."
             continue
@@ -1302,9 +1311,15 @@ cmd_enable_cluster() {
     ensure_shared_env
     ensure_packages_local
 
+    # Interactive input (the VIP check needs arping, installed above). If the
+    # input fails, remove what was just installed: without cluster.env the
+    # restore (0103 --restore) would not remove the packages.
     local main_if vip vip_cidr vrid auth_pass
-    main_if="$(detect_main_interface)"
-    vip="$(get_valid_vip "$main_if")"
+    if ! main_if="$(detect_main_interface)" || ! vip="$(get_valid_vip "$main_if")"; then
+        log_error "enable-cluster aborted before configuring the cluster; removing packages installed by MSL Setup."
+        remove_packages_local
+        exit 1
+    fi
     vip_cidr="${vip}/${ML_CIDR#*/}"
 
     ensure_vxlan_peers_ipset
@@ -1332,7 +1347,10 @@ cmd_enable_cluster() {
     log_info "========================================================================="
     log_info "enable-cluster completed."
     log_info "========================================================================="
-    log_info "Important: Update Static route: destination ${PJALL_CIDR} -> gateway ${vip} (VIP)"
+    # 01_networkSetup.sh (via 0103) shows the router guidance itself
+    if [[ "${MSLCM_NO_ROUTER_HINT:-}" != "1" ]]; then
+        log_info "Important: Update Static route: destination ${PJALL_CIDR} -> gateway ${vip} (VIP)"
+    fi
     log_info "Now you can use the VIP to access the Proxmox dashboard: https://${vip}:8006"
 }
 

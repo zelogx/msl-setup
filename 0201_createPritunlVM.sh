@@ -17,6 +17,7 @@
 #   - lib/common.sh: Common utility functions
 #   - lib/messages_*.sh: Localized messages
 #   - lib/vm_utils.sh: VM deployment functions
+#   - lib/pritunl_installers/<id>/profile.sh: Image definition of the installer
 #   - .env: Environment configuration
 #   - qemu-guest-agent: Cloud-init completion detection
 #   - wget: Image download
@@ -109,10 +110,14 @@ source lib/vm_utils.sh
 # Configuration
 # ============================================================================
 
-# AlmaLinux 9.7 Cloud-Init Image
-readonly IMAGE_URL="https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2"
-readonly CHECKSUM_URL="https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/CHECKSUM"
-readonly IMAGE_CACHE_PATH="/var/lib/vz/template/iso/almalinux-9-genericcloud-latest.x86_64.qcow2"
+# Pritunl installer (installation method). Only "alma9" exists for now.
+# It defines IMAGE_URL, CHECKSUM_URL and IMAGE_CACHE_PATH.
+readonly PRITUNL_INSTALLER_ID="alma9"
+readonly PRITUNL_INSTALLER_DIR="${SCRIPT_DIR}/lib/pritunl_installers/${PRITUNL_INSTALLER_ID}"
+if [ ! -f "${PRITUNL_INSTALLER_DIR}/profile.sh" ]; then
+    die "Pritunl installer not found: ${PRITUNL_INSTALLER_DIR}/profile.sh"
+fi
+source "${PRITUNL_INSTALLER_DIR}/profile.sh"
 
 # VM Configuration
 readonly VM_NAME="pritunl-msl"
@@ -120,7 +125,7 @@ readonly VMID_START=100
 readonly VMID_RECORD_FILE="${SCRIPT_DIR}/.last_created_vmid"
 
 # Validation Script
-readonly VALIDATE_SCRIPT="$SCRIPT_DIR/lib/pritunl_build_helper"
+readonly VALIDATE_SCRIPT="${SCRIPT_DIR}/lib/pritunl_build_helper.py"
 
 # Fixed ICMP firewall rule comments (independent from .env)
 readonly ICMP_RULE_COMMENT1_FIXED="MSLSetup ICMP Prtn VPNDMZ GW"
@@ -404,27 +409,18 @@ if ! wait_for_cloudinit "$VMID" 120; then
 fi
 echo ""
 
-# Step 8: Verify SSH access [deleted]
-# First, add host key to known_hosts using ssh-keyscan
-log_info "Adding $PT_IG_IP to $HOME/.ssh/known_hosts..."
-if ssh-keyscan -T 5 -t ed25519 "$PT_IG_IP" >> "$HOME/.ssh/known_hosts" 2>&1; then
-    log_info "Host key added to known_hosts"
-else
-    log_error "Failed to retrieve SSH host key from $PT_IG_IP"
-    log_error "ssh-keyscan command failed. VM may not be ready or SSH service not started."
-    die "SSH host key retrieval failed. VM remains running for inspection."
-fi
-
-# Step 9: Copy files to VM
-log_info "Step 9: Copying configuration files to VM..."
+# Step 8: Copy files to VM
+# (0201 does not register the VM host key: its ssh/scp use
+#  UserKnownHostsFile=/dev/null, and 0202 registers the key itself)
+log_info "Step 8: Copying configuration files to VM..."
 if ! copy_files_to_vm "$PT_IG_IP" ".env" "$VALIDATE_SCRIPT"; then
     log_error "Failed to copy files to VM"
     die "File copy failed. VM remains running for inspection."
 fi
 echo ""
 
-# Step 10: Run remote validation
-log_info "Step 10: Running remote validation..."
+# Step 9: Run remote validation
+log_info "Step 9: Running remote validation..."
 echo "$MSG_ICMP_ENABLE_START"
 enable_icmp_rule_by_comment "$ICMP_RULE_COMMENT1_FIXED" "vpndmz gateway"
 enable_icmp_rule_by_comment "$ICMP_RULE_COMMENT2_FIXED" "devpjs"

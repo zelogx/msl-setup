@@ -144,10 +144,8 @@ MSG_CONTINUING="続行します..."
 # Phase completion messages
 MSG_PHASE_COMPLETE="フェーズ完了"
 MSG_NEXT_PHASE="次のフェーズ"
-MSG_MANUAL_STEPS="手動設定が必要です"
 
 # Router configuration messages
-MSG_ROUTER_CONFIG_TITLE="ルーター設定 (手動操作が必要)"
 MSG_ROUTER_PORT_FORWARD="ポートフォワード設定"
 MSG_ROUTER_STATIC_ROUTE="スタティックルート設定"
 MSG_ROUTER_CONFIG_COMPLETE="ルーター設定が完了したら次のスクリプトを実行してください"
@@ -155,7 +153,6 @@ MSG_ROUTER_CONFIG_COMPLETE="ルーター設定が完了したら次のスクリ�
 # Router prompt (Phase0 last)
 MSG_ROUTER_TITLE="ルーター設定のお願い"
 MSG_ROUTER_INTRO="以下の設定をルーターに適用してください(値は自動展開済み):"
-MSG_ROUTER_NEXT_STEP="設定完了後、次のフェーズに進んでください"
 
 # VM cleanup messages
 MSG_PREV_VM_FOUND="前回の実行で作成されたVM (VMID: %s) が見つかりました。"
@@ -168,6 +165,9 @@ MSG_VM_REMOVED="  削除完了。"
 MSG_ROUTER_STATIC_ROUTE_LINE=" - スタティックルート: 宛先 %s → ゲートウェイ %s"
 MSG_ROUTER_PF_OV_LINE=" - ポートフォワード (OpenVPN): %s-%s/UDP → %s"
 MSG_ROUTER_PF_WG_LINE=" - ポートフォワード (WireGuard): %s-%s/UDP → %s"
+MSG_ROUTER_CLEANUP_TITLE="ルーター設定の削除"
+MSG_ROUTER_CLEANUP_INTRO="MSL Setup のネットワークを削除しました。ルーターに設定した以下の項目は不要になったので、削除してください:"
+MSG_ROUTER_CLEANUP_ROUTE_LINE=" - スタティックルート: 宛先 %s"
 
 # SVG generator messages
 MSG_SVG_NOTICE="今からこの環境を生成します。ご確認お願いします。"
@@ -349,7 +349,7 @@ MSG_VM_SSH_FAIL="%s回のリトライ後、SSHアクセス失敗。"
 
 # ファイルコピーと検証
 MSG_VM_COPY_ENV=".envをVMにコピー中..."
-MSG_VM_COPY_SCRIPT="検証バイナリをVMにコピー中..."
+MSG_VM_COPY_SCRIPT="検証スクリプトをVMにコピー中..."
 MSG_VM_RUN_VALIDATION="VM上でリモート検証を実行中..."
 MSG_VM_VALIDATION_OK="VM検証が正常に完了しました。"
 MSG_VM_VALIDATION_FAIL="VM検証が失敗しました。詳細はログを確認してください。"

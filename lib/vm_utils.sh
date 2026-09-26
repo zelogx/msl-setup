@@ -23,7 +23,8 @@
 #   source lib/vm_utils.sh
 #
 # Notes:
-#   Must be sourced after common.sh and messages_*.sh
+#   Must be sourced after common.sh and messages_*.sh. create_pritunl_vm also
+#   needs the installer profile (lib/pritunl_installers/<id>/profile.sh).
 ################################################################################
 
 ################################################################################
@@ -367,6 +368,7 @@ ensure_cloud_image() {
 #   - qm create: Create new VM
 #   - qm importdisk: Import cloud-init image as VM disk
 #   - qm set: Configure VM hardware and cloud-init parameters
+#   - render_cloudinit_userdata: cloud-init user-data (installer profile.sh)
 ################################################################################
 create_pritunl_vm() {
     local vmid="$1"
@@ -379,14 +381,6 @@ create_pritunl_vm() {
     printf "$MSG_VM_CREATE_START\\n" "$vmid"
     log_info "Creating Pritunl VM: VMID=$vmid, Name=$vm_name"
     
-    # Read SSH public key and write to temp file for Proxmox --sshkeys parameter
-    local ssh_pubkey temp_sshkey_file
-    ssh_pubkey=$(cat "$ssh_pubkey_file")
-    temp_sshkey_file="/var/lib/vz/snippets/pritunl-vm-${vmid}-sshkey.pub"
-    [[ ! -d "/var/lib/vz/snippets" ]] && mkdir -p /var/lib/vz/snippets
-    echo "$ssh_pubkey" > "$temp_sshkey_file"
-    log_info "SSH public key prepared: $temp_sshkey_file"
-    
     # Calculate netmasks
     local ml_netmask vpndmz_netmask
     ml_netmask=$(echo "$ML_CIDR" | cut -d/ -f2)
@@ -397,59 +391,11 @@ create_pritunl_vm() {
     log_info "  NIC1 (vpndmzvn): $PT_EG_IP/$vpndmz_netmask, GW: $VPNDMZ_GW"
     log_info "  DNS: $DNS_IP1${DNS_IP2:+, $DNS_IP2}"
     
-    # Read SSH public key content
+    # cloud-init user-data (defined by the installer profile) is written
+    # straight to the snippets storage referenced by --cicustom
     local ssh_pubkey
     ssh_pubkey=$(cat "$ssh_pubkey_file")
-    log_info "SSH public key loaded for cloud-init user-data"
-    
-    # Prepare cloud-init user-data with qemu-guest-agent, ssh keys, and static routes
-    local userdata_file="/tmp/pritunl_vm_${vmid}_userdata.yml"
-    cat > "$userdata_file" <<EOF
-#cloud-config
-
-hostname: pritunl-vm-${vmid}
-manage_etc_hosts: true
-disable_root: false
-ssh_pwauth: true
-
-packages:
-  - qemu-guest-agent
-  - bind-utils
-  - nmap-ncat
-
-ssh_authorized_keys:
-  - $ssh_pubkey
-
-runcmd:
-  - systemctl enable qemu-guest-agent
-  - systemctl start qemu-guest-agent
-  - growpart /dev/sda 1 || true
-  - xfs_growfs / || true
-  - fallocate -l 2G /swapfile
-  - chmod 600 /swapfile
-  - mkswap /swapfile
-  - echo '/swapfile none swap sw 0 0' >> /etc/fstab
-  - swapon /swapfile
-  - rm -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf
-  - rm -f /etc/ssh/sshd_config.d/50-cloud-init.conf
-  - |
-    cat > /etc/ssh/sshd_config.d/99-msl.conf <<CFG
-    PermitRootLogin yes
-    PasswordAuthentication yes
-    PubkeyAuthentication yes
-    ListenAddress $PT_IG_IP
-    CFG
-  - systemctl daemon-reload
-  - systemctl restart sshd
-  - ip route add $PJALL_CIDR via $VPNDMZ_GW dev eth1
-  - echo '#!/bin/sh' > /etc/rc.local
-  - echo 'ip route add $PJALL_CIDR via $VPNDMZ_GW dev eth1 ' >> /etc/rc.local
-  - chmod +x /etc/rc.local
-  - echo 'root:Ze!0gx' | chpasswd
-  - mkdir -p /tmp/.meipass && chmod 1777 /tmp/.meipass
-  - mkdir -p /var/tmp/.meipass && chmod 1777 /var/tmp/.meipass
-EOF
-    
+    local userdata_file="/var/lib/vz/snippets/pritunl-vm-${vmid}-userdata.yml"
     
     # Create VM with basic settings (NICs have firewall enabled)
     log_info "Step 1: Creating VM with basic settings (firewall=1 on NICs)..."
@@ -507,8 +453,12 @@ EOF
         die "VM creation failed at step 3.5 (disk resize)"
     fi
     
-    # Configure cloud-init (with --cipassword for root password)
+    # Configure cloud-init
     log_info "Step 4: Configuring cloud-init..."
+    mkdir -p /var/lib/vz/snippets
+    render_cloudinit_userdata "$vmid" "$ssh_pubkey" "$PRITUNL_VM_ROOT_PASSWORD" > "$userdata_file"
+    log_info "cloud-init user-data written: $userdata_file"
+
     # Build nameserver parameter (DNS_IP2 may be empty/unset)
     local nameserver_param="$DNS_IP1"
     if [ -n "${DNS_IP2:-}" ]; then
@@ -520,18 +470,12 @@ EOF
         --ipconfig1 "ip=$PT_EG_IP/$vpndmz_netmask" \
         --nameserver "$nameserver_param" \
         --cicustom "user=local:snippets/pritunl-vm-${vmid}-userdata.yml" \
-        --ciuser root \
         --citype nocloud; then
         log_error "Failed to configure cloud-init"
         qm destroy "$vmid" || true
-        rm -f "$userdata_file" "$temp_sshkey_file" 2>&1 || true
+        rm -f "$userdata_file"
         die "VM creation failed at step 4 (cloud-init config)"
     fi
-    
-    # Copy user-data to Proxmox snippets directory
-    mkdir -p /var/lib/vz/snippets
-    cp "$userdata_file" "/var/lib/vz/snippets/pritunl-vm-${vmid}-userdata.yml"
-    rm -f "$userdata_file" "$temp_sshkey_file"
     
     echo "$MSG_VM_CREATE_SUCCESS"
     log_info "VM created successfully: VMID=$vmid"
@@ -627,7 +571,7 @@ copy_files_to_vm() {
     
     echo "$MSG_VM_COPY_ENV"
     echo "$MSG_VM_COPY_SCRIPT"
-    log_info "Copying .env and validation binary to VM..."
+    log_info "Copying .env and validation script to VM..."
     
     local scp_output
     if ! scp_output=$(scp -o ConnectTimeout=10 \
@@ -635,7 +579,7 @@ copy_files_to_vm() {
         -o UserKnownHostsFile=/dev/null \
         -o LogLevel=ERROR \
         "$env_file" "$script_file" root@"$vm_ip":/root 2>&1); then
-        log_error "Failed to copy .env & validation binary to VM"
+        log_error "Failed to copy .env & validation script to VM"
         log_error "SCP error output: $scp_output"
         log_error "Target: root@$vm_ip:/root"
         log_error "Files: $env_file, $script_file"
@@ -668,18 +612,12 @@ run_vm_validation() {
            root@"$vm_ip" "touch /root/demo"
     fi
 
-     # Execute validation binary and show output in real-time
-    ssh -o ConnectTimeout=30 \
-       -o StrictHostKeyChecking=no \
-       -o UserKnownHostsFile=/dev/null \
-       -o LogLevel=ERROR \
-         root@"$vm_ip" "chmod +x /root/pritunl_build_helper" || true
-
+    # Execute the validation script and show output in real-time
     if ssh -o ConnectTimeout=30 \
            -o StrictHostKeyChecking=no \
            -o UserKnownHostsFile=/dev/null \
            -o LogLevel=ERROR \
-              root@"$vm_ip" "/root/pritunl_build_helper validate"; then
+              root@"$vm_ip" "python3 /root/pritunl_build_helper.py validate"; then
         echo "$MSG_VM_VALIDATION_OK"
         log_info "VM validation completed successfully"
         return 0
@@ -688,7 +626,7 @@ run_vm_validation() {
         echo "$MSG_VM_VALIDATION_FAIL"
         log_error "VM validation failed with exit code: $ssh_exit_code"
         log_error "Target: root@$vm_ip"
-        log_error "Binary: /root/pritunl_build_helper (validate)"
+        log_error "Script: /root/pritunl_build_helper.py (validate)"
         log_error "See validation output above for details"
         return 1
     fi

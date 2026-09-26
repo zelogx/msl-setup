@@ -144,10 +144,8 @@ MSG_CONTINUING="Continuing..."
 # Phase completion messages
 MSG_PHASE_COMPLETE="Phase completed"
 MSG_NEXT_PHASE="Next phase"
-MSG_MANUAL_STEPS="Manual configuration required"
 
 # Router configuration messages
-MSG_ROUTER_CONFIG_TITLE="Router Configuration (Manual Steps Required)"
 MSG_ROUTER_PORT_FORWARD="Port Forwarding Configuration"
 MSG_ROUTER_STATIC_ROUTE="Static Route Configuration"
 MSG_ROUTER_CONFIG_COMPLETE="After completing router configuration, run the next script"
@@ -194,7 +192,6 @@ MSG_ALTERNATIVE_FOUND="Alternative network found"
 # Router prompt (Phase0 last)
 MSG_ROUTER_TITLE="Router configuration required"
 MSG_ROUTER_INTRO="Please apply the following settings on your router (values expanded):"
-MSG_ROUTER_NEXT_STEP="After completing router setup, proceed to the next phase"
 
 # Port range input
 MSG_PORT_RANGE_TITLE="(i) Port range input"
@@ -254,6 +251,9 @@ MSG_VM_REMOVED="Removal complete."
 MSG_ROUTER_STATIC_ROUTE_LINE=" - Static route: destination %s -> gateway %s"
 MSG_ROUTER_PF_OV_LINE=" - Port forward (OpenVPN): %s-%s/UDP -> %s"
 MSG_ROUTER_PF_WG_LINE=" - Port forward (WireGuard): %s-%s/UDP -> %s"
+MSG_ROUTER_CLEANUP_TITLE="Router configuration no longer needed"
+MSG_ROUTER_CLEANUP_INTRO="The MSL Setup network has been removed. You can delete the following settings from your router:"
+MSG_ROUTER_CLEANUP_ROUTE_LINE=" - Static route: destination %s"
 
 # SVG generator messages
 MSG_SVG_NOTICE="Generating network diagram now. Please review."
@@ -348,7 +348,7 @@ MSG_VM_SSH_FAIL="SSH access failed after %s retries."
 
 # File Copy and Validation
 MSG_VM_COPY_ENV="Copying .env to VM..."
-MSG_VM_COPY_SCRIPT="Copying validation binary to VM..."
+MSG_VM_COPY_SCRIPT="Copying validation script to VM..."
 MSG_VM_RUN_VALIDATION="Running remote validation on VM..."
 MSG_VM_VALIDATION_OK="VM validation completed successfully."
 MSG_VM_VALIDATION_FAIL="VM validation failed. Check logs for details."

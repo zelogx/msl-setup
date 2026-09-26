@@ -94,10 +94,6 @@ else
     source "$SCRIPT_ROOT/lib/messages_jp.sh"
 fi
 
-# Router prompt functions
-# shellcheck source=/dev/null
-source "$SCRIPT_ROOT/lib/router_prompt.sh"
-
 # Load .env
 env_file=".env"
 if [[ ! -f "$env_file" ]]; then
@@ -149,13 +145,13 @@ check_reserved_names_unused() {
         || die "Failed to list firewall IPSets. See log: ${LOG_FILE}"
 
     while IFS= read -r name; do
-        [[ "$name" =~ ^(vpndmz|devpj[0-9]{2})$ ]] && in_use+=("zone:${name}")
+        [[ "$name" =~ $MSL_ZONE_NAME_REGEX ]] && in_use+=("zone:${name}")
     done <<< "$zones"
     while IFS= read -r name; do
-        [[ "$name" =~ ^(vpndmzvn|vnetpj[0-9]{2})$ ]] && in_use+=("vnet:${name}")
+        [[ "$name" =~ $MSL_VNET_NAME_REGEX ]] && in_use+=("vnet:${name}")
     done <<< "$vnets"
     while IFS= read -r name; do
-        [[ "$name" =~ ^(devpjs|mainlan|vpn_guest_pool|all_private_ip|vxlan_peers)$ ]] && in_use+=("ipset:${name}")
+        [[ "$name" =~ $MSL_IPSET_NAME_REGEX ]] && in_use+=("ipset:${name}")
     done <<< "$ipsets"
 
     if (( ${#in_use[@]} > 0 )); then
@@ -535,10 +531,7 @@ echo "If you need DHCP on a tenant's isolated network, you can add it later:"
 echo "  Ex.) ./msldhcp"
 echo ""
 echo "(It will prompt you to select the tenant VNet and VMID.)"
-
-# Prompt user for router configuration (manual steps)
-echo ""
-echo "${MSG_MANUAL_STEPS}: ${MSG_ROUTER_CONFIG_TITLE}"
-prompt_router_setup
+# The router guidance (static route / port forwards) is shown once at the end
+# of 01_networkSetup.sh, after the cluster setup (the route target may be the VIP).
 
 log_info "==== SETUP COMPLETED SUCCESSFULLY ===="

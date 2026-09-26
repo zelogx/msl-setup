@@ -114,6 +114,7 @@ else
     fi
     source lib/messages_en.sh
 fi
+source lib/router_prompt.sh
 
 # ============================================================================
 # Logging Setup
@@ -297,6 +298,9 @@ log_info "========================================="
 echo "========================================="
 echo "$MSG_UNINSTALL_COMPLETE"
 echo "========================================="
+
+# The static route and port forwards on the router are no longer needed
+prompt_router_cleanup
 echo ""
 log_info "Uninstall process completed successfully"
 exit 0

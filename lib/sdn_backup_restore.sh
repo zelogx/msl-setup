@@ -36,6 +36,15 @@ MSL_0102_RULE_COMMENT_REGEX='^MSLSetup (Allow (Spice|ssh|https) from external ne
 MSL_DC_ACCESS_RULE_COMMENT_REGEX='^MSLSetup Allow (Spice|ssh|https) from external network to DC$'
 MSL_INET_DROP_RULE_COMMENT_REGEX='^MSLSetup Disallow internet access for PJ[0-9]{2}$'
 
+# Names of the SDN zones / VNets and firewall IPSets that MSL Setup creates
+# (vxlan_peers is created by mslcm). Matched by pattern, independent of .env
+# (NUM_PJ). The restore deletes only objects with these names that are not in
+# the backup; objects created by users under other names are kept. 0102 also
+# uses them to refuse the first install when the names are already in use.
+MSL_ZONE_NAME_REGEX='^(vpndmz|devpj[0-9]{2})$'
+MSL_VNET_NAME_REGEX='^(vpndmzvn|vnetpj[0-9]{2})$'
+MSL_IPSET_NAME_REGEX='^(devpjs|mainlan|vpn_guest_pool|all_private_ip|vxlan_peers)$'
+
 ################################################################################
 # Function: _dump_sdn_state
 # Description: Generic helper to dump SDN/firewall/route state (live or backup)
@@ -292,7 +301,9 @@ msl_perform_backup() {
 
 ################################################################################
 # Function: msl_restore_to_backup
-# Description: Delete resources not present in backup and dump post-restore state
+# Description: Delete MSL-named resources (MSL_*_NAME_REGEX) not present in the
+#              backup and dump post-restore state. Zones / VNets / subnets /
+#              IPSets with other names are left untouched.
 ################################################################################
 msl_restore_to_backup() {
     log_info "$MSG_SDN_RESTORE_EXISTING"
@@ -337,12 +348,13 @@ msl_restore_to_backup() {
     fi
     echo " [OK]"
     
-    # Delete Subnets not in backup and warn on missing
+    # Delete subnets of MSL VNets not in backup and warn on missing
     local current_vnets
     current_vnets=$(pvesh get /cluster/sdn/vnets --output-format json 2>/dev/null | jq -r '.[].vnet' || echo "")
-    echo -n "Deleting subnets not in backup.."
+    echo -n "Deleting MSL subnets............"
     if [[ -n "$current_vnets" ]]; then
         for v in $current_vnets; do
+            [[ "$v" =~ $MSL_VNET_NAME_REGEX ]] || continue
             local backup_subnet_file backup_subnets current_subnets
             backup_subnet_file="$backup_dir/sdn_subnets_${v}_initial.json"
             if [[ -f "$backup_subnet_file" ]]; then
@@ -372,10 +384,10 @@ msl_restore_to_backup() {
     fi
     echo " [OK]"
 
-    echo -n "Deleting VNets not in backup...."
+    echo -n "Deleting MSL VNets.............."
     if [[ -n "$current_vnets" ]]; then
         for v in $current_vnets; do
-            if ! _list_contains "$v" "$backup_vnets"; then
+            if [[ "$v" =~ $MSL_VNET_NAME_REGEX ]] && ! _list_contains "$v" "$backup_vnets"; then
                 log_info "Deleting VNet not present in backup: $v"
                 _pvesh_delete_logged "SDN VNet $v" "/cluster/sdn/vnets/$v"
                 echo -n "."
@@ -391,12 +403,12 @@ msl_restore_to_backup() {
             fi
         done <<< "$backup_vnets"
     fi
-    echo -n "Deleting zones not in backup...."
+    echo -n "Deleting MSL zones.............."
     local current_zones
     current_zones=$(pvesh get /cluster/sdn/zones --output-format json 2>/dev/null | jq -r '.[].zone' || echo "")
     if [[ -n "$current_zones" ]]; then
         for z in $current_zones; do
-            if ! _list_contains "$z" "$backup_zones"; then
+            if [[ "$z" =~ $MSL_ZONE_NAME_REGEX ]] && ! _list_contains "$z" "$backup_zones"; then
                 log_info "Deleting zone not present in backup: $z"
                 _pvesh_delete_logged "SDN zone $z" "/cluster/sdn/zones/$z"
                 echo -n "."
@@ -453,10 +465,10 @@ msl_restore_to_backup() {
     backup_ipsets=$(cat "$backup_dir/firewall_ipset_initial.json" | jq -r '.[].name' || echo "")
     local current_ipsets
     current_ipsets=$(pvesh get /cluster/firewall/ipset --output-format json 2>/dev/null | jq -r '.[].name' || echo "")
-    echo -n "Deleting IPSets not in backup...."
+    echo -n "Deleting MSL IPSets.............."
     if [[ -n "$current_ipsets" ]]; then
         for ipset in $current_ipsets; do
-            if ! _list_contains "$ipset" "$backup_ipsets"; then
+            if [[ "$ipset" =~ $MSL_IPSET_NAME_REGEX ]] && ! _list_contains "$ipset" "$backup_ipsets"; then
                 log_info "Deleting IPSet not present in backup: $ipset"
                 local entries
                 entries=$(pvesh get /cluster/firewall/ipset/$ipset --output-format json 2>/dev/null | jq -r '.[].cidr' || echo "")

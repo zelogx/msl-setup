@@ -10,14 +10,15 @@
 #          create per-project servers and organizations
 #
 # Main functions/commands used:
-#   - ssh: Remote command execution on Pritunl VM
-#   - systemctl: Service management
-#   - pritunl: CLI configuration commands
+#   - run_pritunl_vm_installer: Run <installer>/vm_install.sh inside the VM
+#   - setup_pritunl_orgs: Create organizations via the Pritunl API
+#   - save_config_to_vm_notes: Write credentials and configuration to VM notes
 #
 # Dependencies:
 #   - lib/common.sh: Logging and utility functions
 #   - lib/messages_*.sh: Multi-language message definitions
 #   - lib/pritunl_install.sh: Pritunl installation functions
+#   - lib/pritunl_installers/<id>/: Installer files (helper binary, SELinux helper)
 #   - .env: Environment configuration
 #   - Phase 2 completed: Pritunl VM deployed and accessible
 #
@@ -26,9 +27,10 @@
 #   Normally called from 02_vpnSetup.sh.
 #
 # Notes:
-#   - Servers are inserted into MongoDB by pritunl_build_helper inside the VM;
+#   - The installation runs inside the VM (lib/pritunl_installers/<id>/vm_install.sh).
+#     Servers are inserted into MongoDB by pritunl_build_helper inside the VM;
 #     organizations are created, attached and started via the Pritunl HTTP API
-#     (initial admin account). No Web UI automation.
+#     from the host (initial admin account). No Web UI automation.
 #   - Takes a VM snapshot on first run and rolls back to it on re-runs
 #   - VM deployed with root user (cloud-init disable_root: false)
 ################################################################################
@@ -56,6 +58,14 @@ export MSL_LANG
 source lib/common.sh
 source "lib/messages_${MSL_LANG}.sh"
 source lib/pritunl_install.sh
+
+# Pritunl installer (installation method). Only "alma9" exists for now.
+readonly PRITUNL_INSTALLER_ID="alma9"
+readonly PRITUNL_INSTALLER_DIR="${SCRIPT_DIR}/lib/pritunl_installers/${PRITUNL_INSTALLER_ID}"
+if [ ! -f "${PRITUNL_INSTALLER_DIR}/profile.sh" ]; then
+    die "Pritunl installer not found: ${PRITUNL_INSTALLER_DIR}/profile.sh"
+fi
+source "${PRITUNL_INSTALLER_DIR}/profile.sh"
 
 # Load environment variables
 if [ ! -f .env ]; then
@@ -158,48 +168,15 @@ else
     log_info "Snapshot created: ${snap_name}" -c
 fi
 
-# Install Pritunl and dependencies
-install_pritunl_packages "${PT_IG_IP}"
+# Install and configure Pritunl / MongoDB and create the VPN servers inside the VM
+run_pritunl_vm_installer "${PT_IG_IP}"
 
-# Configure MongoDB
-configure_mongodb "${PT_IG_IP}"
-
-# Configure Pritunl initial setup
-configure_pritunl_initial "${PT_IG_IP}"
-
-# Configure SELinux UDP port labeling and bind policy
-configure_selinux_port_settings "${PT_IG_IP}"
-
-# Configure system settings
-configure_system_settings "${PT_IG_IP}"
-
-# Configure global Pritunl settings (MUST be before apply_security_hardening)
-configure_global_pritunl_settings "${PT_IG_IP}"
-
-# Apply security hardening (after Pritunl is already started)
-apply_security_hardening "${PT_IG_IP}"
-
-# Copy .env to VM for helper binary (required for mongodb command)
-log_info "Preparing environment configuration for helper binary..." -c
-if ! scp ".env" "root@${PT_IG_IP}:/tmp/.env"; then
-    die "Failed to copy .env configuration to VM"
-fi
-
-# Create VPN servers via MongoDB direct manipulation (Phase 3.9.2)
-create_pritunl_servers_mongodb "${PT_IG_IP}"
+# Initial admin password (used for the API setup and the VM notes)
+get_pritunl_default_password "${PT_IG_IP}"
+log_info "Pritunl initial user and password: pritunl/${PRITUNL_PASSWORD}"
 
 # Create Organizations, Attach to Servers, and Start Servers via API
-log_info "Retrieving Pritunl default password for API setup..." -c
-PRITUNL_PASSWORD=$(ssh "root@${PT_IG_IP}" "pritunl default-password" 2>&1 | tail -1 | sed 's/^.*password: *//' | xargs)
-log_info "Pritunl initial user and password: pritunl/${PRITUNL_PASSWORD}"
-if [[ -z "${PRITUNL_PASSWORD}" ]]; then
-    log_warn "Could not retrieve Pritunl password. Setup might fail." -c
-fi
-
 setup_pritunl_orgs "${PT_IG_IP}" "${PRITUNL_PASSWORD}"
-
-# Perform verification
-perform_verification "${PT_IG_IP}"
 
 # Save configuration reference to VM notes
 save_config_to_vm_notes "${VMID}" "${PT_IG_IP}" "${PRITUNL_PASSWORD}"

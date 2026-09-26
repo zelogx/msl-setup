@@ -24,7 +24,7 @@
 #   post_phase_probe_token "$LANG_ARG" "01_start"
 #
 # Notes:
-#   - The data sent is documented in GITHUB_WIKI_DATA_SENT_*.md
+#   - The data sent is documented in docs/wiki/GITHUB_WIKI_DATA_SENT_*.md
 ################################################################################
 
 UUID_FILE_PATH="${PROJECT_ROOT}/.uuid"

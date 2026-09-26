@@ -104,14 +104,6 @@ msg() {
         en:PVECM_NOT_FOUND) printf '%s' 'pvecm command not found' ;;
         jp:MSLCM_NOT_FOUND) printf '%s' 'mslcm が見つかりません: %s' ;;
         en:MSLCM_NOT_FOUND) printf '%s' 'mslcm not found: %s' ;;
-        jp:PVE_IP_NOT_SET) printf '%s' 'PVE_IP が未設定です (%s と %s を確認)' ;;
-        en:PVE_IP_NOT_SET) printf '%s' 'PVE_IP is not set (checked %s and %s)' ;;
-        jp:PJALL_NOT_SET) printf '%s' 'PJALL_CIDR が未設定です (%s と %s を確認)' ;;
-        en:PJALL_NOT_SET) printf '%s' 'PJALL_CIDR is not set (checked %s and %s)' ;;
-        jp:CLUSTER_ENV_NOT_FOUND) printf '%s' 'cluster.env が見つかりません: %s' ;;
-        en:CLUSTER_ENV_NOT_FOUND) printf '%s' 'cluster.env not found: %s' ;;
-        jp:MAIN_VIP_NOT_SET) printf '%s' '%s に MAIN_VIP が設定されていません' ;;
-        en:MAIN_VIP_NOT_SET) printf '%s' 'MAIN_VIP is not set in %s' ;;
         jp:NOT_CLUSTER_EXIT) printf '%s' 'このノードはクラスタに参加していません。' ;;
         en:NOT_CLUSTER_EXIT) printf '%s' 'This node is not part of a cluster.' ;;
         jp:CLUSTER_NOT_ENABLED_SKIP) printf '%s' 'MSL Setup のクラスタ構成は有効化されていないため、del-node / disable-cluster をスキップします。' ;;
@@ -132,10 +124,6 @@ msg() {
         en:LINE_SEP) printf '%s' '================================' ;;
         jp:RESTORE_COMPLETED) printf '%s' 'クラスタのリストアが完了しました' ;;
         en:RESTORE_COMPLETED) printf '%s' 'Cluster restore completed successfully' ;;
-        jp:ROUTER_REMINDER) printf '%s' 'ルーターの設定を変更してください:' ;;
-        en:ROUTER_REMINDER) printf '%s' 'Router configuration reminder:' ;;
-        jp:CHANGE_ROUTE_RESTORE) printf '%s' 'Static routeの設定を変更してください: destination %s -> gateway %s' ;;
-        en:CHANGE_ROUTE_RESTORE) printf '%s' 'Change Static route: destination %s -> gateway %s' ;;
         jp:SCRIPT_RESTORE_DONE) printf '%s' 'リストア処理が正常終了しました' ;;
         en:SCRIPT_RESTORE_DONE) printf '%s' 'Restore completed successfully' ;;
         jp:MSLCM_INSTALLED) printf '%s' 'mslcm を配置しました: %s -> %s' ;;
@@ -166,8 +154,6 @@ msg() {
         en:NO_ADDNODE_TARGETS) printf '%s' 'No add-node targets found (0x00000002 or later).' ;;
         jp:SETUP_COMPLETED) printf '%s' 'クラスタセットアップが完了しました' ;;
         en:SETUP_COMPLETED) printf '%s' 'Cluster setup completed successfully' ;;
-        jp:CHANGE_ROUTE_SETUP) printf '%s' 'Static routeの設定を変更してください: destination %s -> gateway %s (VIP)' ;;
-        en:CHANGE_ROUTE_SETUP) printf '%s' 'Change Static route: destination %s -> gateway %s (VIP)' ;;
         *) printf '%s' "$key" ;;
     esac
 }
@@ -224,78 +210,6 @@ require_prerequisites() {
 }
 
 ################################################################################
-# Function: resolve_master_ip
-# Description: Resolve PVE_IP from shared env (preferred) or local .env.
-#
-# Main commands/functions used:
-#   - source: Load key-value variables from env files
-################################################################################
-resolve_master_ip() {
-    if [[ -f "${SHARED_ENV_PATH}" ]]; then
-        # shellcheck disable=SC1090
-        source "${SHARED_ENV_PATH}"
-    elif [[ -f "${SCRIPT_DIR}/.env" ]]; then
-        # shellcheck disable=SC1090
-        source "${SCRIPT_DIR}/.env"
-    fi
-
-    if [[ -z "${PVE_IP:-}" ]]; then
-        log_error "$(printf "$(msg PVE_IP_NOT_SET)" "${SHARED_ENV_PATH}" "${SCRIPT_DIR}/.env")"
-        exit 1
-    fi
-
-    printf '%s\n' "$PVE_IP"
-}
-
-################################################################################
-# Function: resolve_pjall_cidr
-# Description: Resolve PJALL_CIDR from shared env (preferred) or local .env.
-#
-# Main commands/functions used:
-#   - source: Load key-value variables from env files
-################################################################################
-resolve_pjall_cidr() {
-    if [[ -f "${SHARED_ENV_PATH}" ]]; then
-        # shellcheck disable=SC1090
-        source "${SHARED_ENV_PATH}"
-    elif [[ -f "${LOCAL_ENV_PATH}" ]]; then
-        # shellcheck disable=SC1090
-        source "${LOCAL_ENV_PATH}"
-    fi
-
-    if [[ -z "${PJALL_CIDR:-}" ]]; then
-        log_error "$(printf "$(msg PJALL_NOT_SET)" "${SHARED_ENV_PATH}" "${LOCAL_ENV_PATH}")"
-        exit 1
-    fi
-
-    printf '%s\n' "$PJALL_CIDR"
-}
-
-################################################################################
-# Function: resolve_vip_ip
-# Description: Resolve VIP IP from MAIN_VIP in cluster.env (CIDR -> IP only).
-#
-# Main commands/functions used:
-#   - awk: Parse MAIN_VIP entry from cluster.env
-################################################################################
-resolve_vip_ip() {
-    local main_vip
-
-    if [[ ! -f "${CLUSTER_ENV_PATH}" ]]; then
-        log_error "$(printf "$(msg CLUSTER_ENV_NOT_FOUND)" "${CLUSTER_ENV_PATH}")"
-        exit 1
-    fi
-
-    main_vip="$(awk -F'=' '/^MAIN_VIP=/{print $2; exit}' "${CLUSTER_ENV_PATH}")"
-    if [[ -z "$main_vip" ]]; then
-        log_error "$(printf "$(msg MAIN_VIP_NOT_SET)" "${CLUSTER_ENV_PATH}")"
-        exit 1
-    fi
-
-    printf '%s\n' "${main_vip%%/*}"
-}
-
-################################################################################
 # Function: get_cluster_status
 # Description: Run pvecm status and return output through stdout.
 #              If host is not part of a cluster, prints a notice to stderr and
@@ -334,7 +248,8 @@ get_cluster_status() {
 run_mslcm() {
     local subcmd="$1"
     shift || true
-    bash "$MSLCM_PATH" "$subcmd" "$@"
+    # The router guidance (static route -> VIP) is shown once by 01_networkSetup.sh
+    MSLCM_NO_ROUTER_HINT=1 bash "$MSLCM_PATH" "$subcmd" "$@"
 }
 
 ################################################################################
@@ -442,8 +357,6 @@ collect_backup_targets_from_cluster_env() {
 run_restore_flow() {
     local backup_ips
     local ip
-    local pjall_cidr
-    local pve_ip
 
     if [[ ! -f "${SHARED_ENV_PATH}" ]]; then
         log_info "$(printf "$(msg RESTORE_SKIPPED_SHARED_ENV_MISSING)" "${SHARED_ENV_PATH}")"
@@ -476,13 +389,8 @@ run_restore_flow() {
     log_info "$(printf "$(msg RUNNING_CMD2)" "./mslcm disable-cluster")"
     run_mslcm disable-cluster
 
-    pjall_cidr="$(resolve_pjall_cidr)"
-    pve_ip="$(resolve_master_ip)"
-
     log_info "$(msg LINE_SEP)"
     log_info "$(msg RESTORE_COMPLETED)"
-    log_info "$(msg ROUTER_REMINDER)"
-    log_info "$(printf "$(msg CHANGE_ROUTE_RESTORE)" "${pjall_cidr}" "${pve_ip}")"
     log_info "$(msg LINE_SEP)"
     log_info "$(msg SCRIPT_RESTORE_DONE)"
 
@@ -503,8 +411,6 @@ main() {
     local status_output
     local target_ips
     local ip
-    local pjall_cidr
-    local vip_ip
 
     parse_args "$@"
     require_prerequisites
@@ -545,13 +451,8 @@ main() {
         run_mslcm add-node "$ip"
     done
 
-    pjall_cidr="$(resolve_pjall_cidr)"
-    vip_ip="$(resolve_vip_ip)"
-
     log_info "$(msg LINE_SEP)"
     log_info "$(msg SETUP_COMPLETED)"
-    log_info "$(msg ROUTER_REMINDER)"
-    log_info "$(printf "$(msg CHANGE_ROUTE_SETUP)" "${pjall_cidr}" "${vip_ip}")"
     log_info "$(msg LINE_SEP)"
 
 }
